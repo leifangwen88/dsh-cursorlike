@@ -1,5 +1,9 @@
 # CursorLike
 
+[![npm](https://img.shields.io/npm/v/dsh-cursorlike?label=npm)](https://www.npmjs.com/package/dsh-cursorlike)
+[![GitHub Release](https://img.shields.io/github/v/release/leifangwen88/dsh-cursorlike?label=release)](https://github.com/leifangwen88/dsh-cursorlike/releases)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > **给 DeepSeek Harness 的 Cursor 式编码工作台。**
 > 输入框上方待审文件卡 + 官方右侧栏 Monaco 编辑器 + 差异审查 + AI 补全/内联编辑。
 
@@ -7,10 +11,24 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 保留上游的编辑器、文件树、差异审查与 AI 基础，围绕 Cursor 的核心动线重构了「会话级文件浏览卡」，
 并把不进入主路径的重功能逐步做减法。
 
-- 当前版本：`0.1.0`（首个公开发行版）
+- 当前版本：`0.1.0`（已发布到 npm 与 GitHub Releases）
+- 安装：`dsh plugin add dsh-cursorlike`
 - 目标 DSH：`0.2.1-rc.x`（`engines.dsh: >=0.1.0-rc.1 <0.3.0-0`，cordis `>=4.0.0-rc <5`）
 - 许可证：MIT（保留上游版权与许可声明）
 
+## 截图
+
+<p align="center">
+  <img src="assets/screenshots/cursorlike-workspace.png" alt="CursorLike 右侧栏编辑器、文件树与待审文件卡" width="860">
+</p>
+
+<p align="center"><em>右侧栏编辑器 + 文件树 + 差异审查 / 待审文件卡（截图为本仓库 README 的编辑过程）</em></p>
+
+<p align="center">
+  <img src="assets/screenshots/cursorlike-settings.png" alt="CursorLike 设置页" width="620">
+</p>
+
+<p align="center"><em>设置页：编辑器 / AI 补全 / 语言服务器 / 性能优化 / 兼容性</em></p>
 
 ## 特性
 
@@ -87,11 +105,17 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 4. 在 profile 目录执行 `pnpm install`，然后**完全重启 DSH**；
 5. 打开一个会话，右侧栏出现「文件编辑」Tab，输入框上方出现待审文件卡即安装成功。
 
-### 发布版安装（GitHub Release）
+### 安装（npm / GitHub Release 任选）
 
-> 仓库发布后任选一种方式：
+**A. npm 安装（推荐）**
 
-**A. 插件页从 URL 安装（推荐，无需 npm）**
+```bash
+dsh plugin add dsh-cursorlike
+```
+
+或在 DSH 插件页按包名 `dsh-cursorlike` 安装；插件显示名为 **CursorLike**。安装完成后重启 DSH。
+
+**B. 插件页从 URL 安装（无需 npm）**
 
 1. DSH → 设置 → **插件** → **安装**；
 2. 粘贴 Release 资产 URL：
@@ -102,25 +126,19 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 
 3. 安装完成后重启 DSH（Host 半不热载）。
 
-**B. 从 GitHub 仓库安装（开发者）**
+**C. 从 GitHub 仓库安装（开发者）**
 
 安装 spec 填 `https://github.com/leifangwen88/dsh-cursorlike`（或 `github:leifangwen88/dsh-cursorlike`）。会拉取源码并执行 `prepare` 构建，首次较慢，且可能需要批准依赖构建脚本。
 
-**C. 命令行（仅非 desktop profile）**
+**D. 命令行（仅非 desktop profile）**
 
 ```bash
+dsh plugin --profile <profile-name> add dsh-cursorlike
+# 或指定 Release tarball
 dsh plugin --profile <profile-name> add <Release tarball URL>
 ```
 
 `dsh plugin` 只把参数转发给 pnpm，不会自动选中组合包；desktop profile 由 Electron 应用独占管理，请使用 A。
-
-**D. npm 安装（发布后推荐）**
-
-```bash
-dsh plugin add dsh-cursorlike
-```
-
-或在 DSH 插件页按包名 `dsh-cursorlike` 安装；插件显示名为 **CursorLike**。
 
 ## 快捷键
 
@@ -184,7 +202,7 @@ pnpm pack
 - 无自更新 / 检查更新，更新交给 DSH 插件管理器；
 - Quick Edit 不占用 `Ctrl+K`（与 DSH 的会话搜索冲突），通过选区浮层触发；
 - 部分上游重功能仍在包内（DAP、代码片段、PDF 预览等），减法进行中；
-- 截图待补充；欢迎提交使用截图。
+- 欢迎提交使用截图到仓库 `assets/screenshots/`。
 
 ## 与上游的关系
 
