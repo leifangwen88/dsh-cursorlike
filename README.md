@@ -64,7 +64,7 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 - 性能优化 / 兼容性：维护用报告，不占用主流程
 
 > 仍保留自上游、但不在 Cursor 主路径上的能力：调试器（DAP）、代码片段、PDF/Office 自定义预览、远程打开等。
-> 这些会按 `docs/CursorLike-subtraction-audit.md` 的减法清单逐步收敛，当前版本不保证长期保留。
+> 这些会按减法清单逐步收敛，当前版本不保证长期保留。
 
 ## 安装
 
@@ -88,7 +88,7 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 
 ### 发布版安装（GitHub Release）
 
-> 完整发布流程见 [docs/release.md](docs/release.md)。仓库发布后任选一种方式：
+> 仓库发布后任选一种方式：
 
 **A. 插件页从 URL 安装（推荐，无需 npm）**
 
@@ -113,7 +113,13 @@ dsh plugin --profile <profile-name> add <Release tarball URL>
 
 `dsh plugin` 只把参数转发给 pnpm，不会自动选中组合包；desktop profile 由 Electron 应用独占管理，请使用 A。
 
-npm 发布后（见发布手册；需先把包名改为小写/scope）可直接 `dsh plugin add dsh-cursorlike`。
+**D. npm 安装（发布后推荐）**
+
+```bash
+dsh plugin add dsh-cursorlike
+```
+
+或在 DSH 插件页按包名 `dsh-cursorlike` 安装；插件显示名为 **CursorLike**。
 
 ## 快捷键
 
@@ -177,7 +183,7 @@ pnpm pack
 - 无自更新 / 检查更新，更新交给 DSH 插件管理器；
 - Quick Edit 不占用 `Ctrl+K`（与 DSH 的会话搜索冲突），通过选区浮层触发；
 - 部分上游重功能仍在包内（DAP、代码片段、PDF 预览等），减法进行中；
-- 截图待补充；欢迎提交使用截图到 `docs/`。
+- 截图待补充；欢迎提交使用截图。
 
 ## 与上游的关系
 
@@ -190,15 +196,6 @@ CursorLike fork 自 [Lenonss/DSH_VsCodeMode](https://github.com/Lenonss/DSH_VsCo
 - 新增输入框上方待审文件卡（撤销/采纳/审查、孤儿文件状态、按会话记忆）；
 - Cursor 式保存策略、文件链接路由、Markdown 预览与软换行增强、Quick Edit / Add to Chat / 拖入引用；
 - 为后续「减法 + 开源发布」重排文档与 CI。
-
-上游历史发行说明与部分架构文档归档在 [`docs/upstream/`](docs/upstream/)。
-
-## 文档
-
-- [docs/release.md](docs/release.md)：发布到 GitHub / 他人安装（插件页 URL、git、命令行）与可选 npm 发布手册
-- [CursorLike-plan.md](docs/CursorLike-plan.md)：产品方向、功能取舍、阶段与进度
-- [CursorLike-subtraction-audit.md](docs/CursorLike-subtraction-audit.md)：逐项减法审计清单
-- [docs/upstream/](docs/upstream/)：上游（dsh-vscode-mode）发行说明与架构文档
 
 ## 许可
 

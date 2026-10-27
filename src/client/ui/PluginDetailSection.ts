@@ -70,7 +70,7 @@ export function PluginDetailSection(props) {
   const warnCount = Array.isArray(report?.warnings) ? report.warnings.length : 0
 
   return React.createElement('section', { className: 'vsm-panel', 'data-edrv-plugin-status': '1' },
-    React.createElement('h3', { className: 'vsm-panel-title' }, 'VSCodeMode 运行状态'),
+    React.createElement('h3', { className: 'vsm-panel-title' }, 'CursorLike 运行状态'),
     React.createElement('div', { className: 'vsm-panel-body' },
       row('版本', versionText + ' · ' + pluginText),
       row('版本适配', countText(report?.adapters)),

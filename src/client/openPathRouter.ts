@@ -49,7 +49,7 @@ export function installOpenPathRouter(options: OpenPathRouterOptions): () => voi
  * @returns VSCodeMode 打开器
  */
 export function vscodeOpener(): { id: string; label: string; priority: number; open: (path: string) => void } {
-  return { id: VSCODE_OPEN_TOOL, label: 'VSCodeMode', priority: 100, open: (path) => openEditorView(path) }
+  return { id: VSCODE_OPEN_TOOL, label: 'CursorLike', priority: 100, open: (path) => openEditorView(path) }
 }
 
 /**
