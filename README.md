@@ -11,9 +11,10 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 - 目标 DSH：`0.2.1-rc.x`（`engines.dsh: >=0.1.0-rc.1 <0.3.0-0`，cordis `>=4.0.0-rc <5`）
 - 许可证：MIT（保留上游版权与许可声明）
 
+
 ## 特性
 
-### 1. 输入框上方待审文件卡（本 fork 的核心）
+### 1. 输入框上方待审文件卡
 
 - 收起态：`N Files`（单文件显示相对路径）+ `Undo All` / `Keep All` / `Review`
 - 展开态：每行「文件类型图标 + 文件名 + `+N −M`」，行尾 `×`（拒绝）/ `✓`（采纳）

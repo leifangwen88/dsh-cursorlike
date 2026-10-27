@@ -101,7 +101,7 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           echo "verifying ${pkg}@${version} (commit ${GITHUB_SHA})"
           ok=0
-          for attempt in $(seq 1 15); do
+          for attempt in $(seq 1 10); do
             if curl -fsSL "https://registry.npmjs.org/${pkg}/${version}" -o /tmp/meta.json 2>/dev/null; then
               tarball="$(node -p "require('/tmp/meta.json').dist.tarball")"
               if [ -n "${tarball}" ] && curl -fsSL "${tarball}" -o /tmp/verify.tgz; then
@@ -109,10 +109,21 @@ jobs:
                 break
               fi
             fi
-            echo "attempt ${attempt}/15: ${pkg}@${version} not public yet, retrying in 30s..."
-            sleep 30
+            echo "attempt ${attempt}/10: ${pkg}@${version} not public yet, retrying in 20s..."
+            sleep 20
           done
           if [ "${ok}" != "1" ]; then
+            # npm staged publishing：bypass-2FA token 的发布可能只进入暂存区，
+            # registry 上只有 0.0.0-stage 占位版本，需要维护者在 npmjs.com
+            # 的 Staged Packages 里用 2FA 批准后才公开。这不是 CI 失败。
+            staged=false
+            if curl -fsSL "https://registry.npmjs.org/${pkg}" -o /tmp/pkg-meta.json 2>/dev/null; then
+              staged="$(node -p "JSON.stringify(require('/tmp/pkg-meta.json').versions || {}).includes('0.0.0-stage')")"
+            fi
+            if [ "${staged}" = "true" ]; then
+              echo "::notice title=npm staged publishing::${pkg}@${version} is staged. Approve it with 2FA on npmjs.com (Staged Packages) to make it installable."
+              exit 0
+            fi
             echo "::error::npm package ${pkg}@${version} not retrievable after retries"
             exit 1
           fi
