@@ -54,9 +54,12 @@ jobs:
         run: |
           tgz="$(ls -1 ./*.tgz | head -1)"
           echo "tarball: ${tgz}"
+          # 先落盘再 grep：`tar -tzf | grep -q` 在 grep 命中即退出时会触发
+          # tar 的 SIGPIPE，配合 pipefail 会把「存在」误判成「缺失」。
+          tar -tzf "${tgz}" > /tmp/tarball-entries.txt
           missing=0
           for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml; do
-            if ! tar -tzf "${tgz}" | grep -qx "${entry}"; then
+            if ! grep -qx "${entry}" /tmp/tarball-entries.txt; then
               echo "::error::tarball missing ${entry}"
               missing=1
             fi
@@ -65,8 +68,6 @@ jobs:
             exit 1
           fi
 
-      # npm 发布暂未启用：需要先确定小写包名或 scope（npm 不接受大写包名），
-      # 并在仓库配置 NPM_TOKEN 后再追加 publish 步骤。
       - name: GitHub Release (attach tgz)
         uses: softprops/action-gh-release@v2
         with:
@@ -100,11 +101,9 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           echo "verifying ${pkg}@${version} (commit ${GITHUB_SHA})"
           ok=0
-          meta=''
           for attempt in $(seq 1 15); do
-            meta="$(curl -fsSL "https://registry.npmjs.org/${pkg}/${version}" || true)"
-            if [ -n "${meta}" ]; then
-              tarball="$(node -e "process.stdout.write(JSON.parse(process.argv[1]).dist.tarball)" "${meta}")"
+            if curl -fsSL "https://registry.npmjs.org/${pkg}/${version}" -o /tmp/meta.json 2>/dev/null; then
+              tarball="$(node -p "require('/tmp/meta.json').dist.tarball")"
               if [ -n "${tarball}" ] && curl -fsSL "${tarball}" -o /tmp/verify.tgz; then
                 ok=1
                 break
@@ -117,14 +116,15 @@ jobs:
             echo "::error::npm package ${pkg}@${version} not retrievable after retries"
             exit 1
           fi
-          gitHead="$(node -e "process.stdout.write(JSON.parse(process.argv[1]).gitHead || '')" "${meta}")"
+          gitHead="$(node -p "require('/tmp/meta.json').gitHead || ''")"
           echo "registry gitHead=${gitHead} expected=${GITHUB_SHA}"
           if [ "${gitHead}" != "${GITHUB_SHA}" ]; then
             echo "::error::registry gitHead does not match the release commit"
             exit 1
           fi
+          tar -tzf /tmp/verify.tgz > /tmp/published-entries.txt
           for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml; do
-            if ! tar -tzf /tmp/verify.tgz | grep -qx "${entry}"; then
+            if ! grep -qx "${entry}" /tmp/published-entries.txt; then
               echo "::error::published tarball missing ${entry}"
               exit 1
             fi
