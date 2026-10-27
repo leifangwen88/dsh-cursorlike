@@ -72,3 +72,61 @@ jobs:
         with:
           files: '*.tgz'
           generate_release_notes: true
+
+      # npm 发布：仅在仓库配置了 NPM_TOKEN 时执行（tag 触发，禁止本地 publish）。
+      # token 需要能在 npm 上发布该包（Classic Automation token 或带 Packages 写权限的 granular token）。
+      - name: Publish to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "NPM_TOKEN not configured — skipping npm publish."
+            exit 0
+          fi
+          printf '//registry.npmjs.org/:_authToken=%s\n' "${NPM_TOKEN}" > "${RUNNER_TEMP}/.npmrc"
+          npm publish --access public --userconfig "${RUNNER_TEMP}/.npmrc"
+
+      - name: Verify published package (registry + tarball)
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "npm publish skipped — nothing to verify."
+            exit 0
+          fi
+          pkg="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          echo "verifying ${pkg}@${version} (commit ${GITHUB_SHA})"
+          ok=0
+          meta=''
+          for attempt in $(seq 1 15); do
+            meta="$(curl -fsSL "https://registry.npmjs.org/${pkg}/${version}" || true)"
+            if [ -n "${meta}" ]; then
+              tarball="$(node -e "process.stdout.write(JSON.parse(process.argv[1]).dist.tarball)" "${meta}")"
+              if [ -n "${tarball}" ] && curl -fsSL "${tarball}" -o /tmp/verify.tgz; then
+                ok=1
+                break
+              fi
+            fi
+            echo "attempt ${attempt}/15: ${pkg}@${version} not public yet, retrying in 30s..."
+            sleep 30
+          done
+          if [ "${ok}" != "1" ]; then
+            echo "::error::npm package ${pkg}@${version} not retrievable after retries"
+            exit 1
+          fi
+          gitHead="$(node -e "process.stdout.write(JSON.parse(process.argv[1]).gitHead || '')" "${meta}")"
+          echo "registry gitHead=${gitHead} expected=${GITHUB_SHA}"
+          if [ "${gitHead}" != "${GITHUB_SHA}" ]; then
+            echo "::error::registry gitHead does not match the release commit"
+            exit 1
+          fi
+          for entry in package/lib/index.js package/lib/client.js package/cordis.patch.yml; do
+            if ! tar -tzf /tmp/verify.tgz | grep -qx "${entry}"; then
+              echo "::error::published tarball missing ${entry}"
+              exit 1
+            fi
+          done
+          echo "npm verification passed."

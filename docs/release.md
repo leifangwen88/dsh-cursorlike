@@ -14,7 +14,7 @@
 
 - [ ] 版本号：`package.json` 的 `version`。tag 必须与之一致（Release 工作流第一步校验 `v<version>`）。
 - [ ] 首个公开发行版已是 `0.1.0`；后续发版先改版本再打 tag。
-- [ ] README 安装段把 `leifangwen88/dsh-cursorlike` 换成真实地址。
+- [ ] 确认 README 安装段地址为 `leifangwen88/dsh-cursorlike`（已填）。
 - [ ] 三门本地全绿：
   ```bash
   pnpm typecheck
