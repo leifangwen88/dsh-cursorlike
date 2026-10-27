@@ -1,0 +1,23 @@
+CursorLike
+Copyright (c) 2026 CursorLike contributors
+Licensed under the MIT License (see LICENSE).
+
+This product is a fork of:
+
+  dsh-vscode-mode
+  https://github.com/Lenonss/DSH_VsCodeMode
+  Copyright (c) 2026 LiuZiLong
+  Licensed under the MIT License
+
+The upstream MIT license text is retained in the LICENSE file.
+Portions of the source, architecture and documentation are derived from the
+upstream project; see docs/upstream/ for archived upstream release notes and
+architecture documents.
+
+Bundled third-party assets keep their own notices:
+
+  Monaco Editor       — MIT, assets/vendor/monaco/LICENSE
+                       (ThirdPartyNotices: assets/vendor/monaco/ThirdPartyNotices.txt)
+  PDF.js              — Apache-2.0, assets/vendor/pdfjs/ (cmaps/LICENSE etc.)
+
+CursorLike is a community project and is not affiliated with Cursor / Anysphere.

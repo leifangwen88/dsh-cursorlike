@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "CursorLike",
+    "description": "Cursor 式 DSH 编码工作台：输入框待审文件卡、右侧 Monaco 编辑器、差异审查、Tab 补全与 Cmd+K 内联编辑。"
+  }
+}

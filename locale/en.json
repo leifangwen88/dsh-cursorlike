@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "CursorLike",
+    "description": "Cursor-style coding surface for DeepSeek Harness: pending-files card, side Monaco editor, diff review, Tab completion and Cmd+K inline edit."
+  }
+}

@@ -1,0 +1,156 @@
+/* ===== 输入框待审文件卡（conversation.input.dock，Cursor 式） =====
+ * 只出现在唯一会话级 dock 的壳内（[data-edrv-diff-dock-shell]）：壳负责宽度/边框/圆角/底色，
+ * 本文件只排版头部、文件行与动作按钮；颜色全部走 --dsw-alias-* 令牌。
+ * 作者 ddj 2026年10月27号 */
+
+[data-edrv-diff-dock-shell] .edrv-sfc {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 2px 0 8px;
+  border: 1px solid var(--dsw-alias-border-l1, #e5e9ef);
+  border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary, #26313d);
+  font-family: Inter, var(--dsw-font-family, sans-serif);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* 头部：多文件 N Files / 单文件相对路径 + Undo/Keep/Review @author ddj 2026年10月27号 */
+[data-edrv-diff-dock-shell] .edrv-sfc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, #e5e9ef);
+  cursor: pointer;
+  user-select: none;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-chevron {
+  flex: none;
+  width: 14px;
+  color: var(--dsw-alias-label-tertiary, #697586);
+  font-size: 11px;
+  line-height: 1;
+  text-align: center;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-actions { cursor: default; }
+[data-edrv-diff-dock-shell] .edrv-sfc-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-primary, #26313d);
+  font-weight: 500;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-actions { display: flex; align-items: center; flex: none; gap: 2px; }
+[data-edrv-diff-dock-shell] .edrv-sfc-action {
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #52606d);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-action:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(15, 157, 88, 0.08)); }
+[data-edrv-diff-dock-shell] .edrv-sfc-action:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #3b63d9); outline-offset: -2px; }
+[data-edrv-diff-dock-shell] .edrv-sfc-action:disabled { opacity: 0.45; cursor: default; }
+[data-edrv-diff-dock-shell] .edrv-sfc-action.edrv-sfc-keep { color: var(--dsw-alias-state-success-primary, #0f7a45); }
+[data-edrv-diff-dock-shell] .edrv-sfc-action.edrv-sfc-undo { color: var(--dsw-alias-state-error-primary, #b64043); }
+[data-edrv-diff-dock-shell] .edrv-sfc-action.edrv-sfc-review {
+  border: 1px solid var(--dsw-alias-border-l2, #d5dbe3);
+  background: var(--dsw-alias-bg-module-platform, #f2f4f7);
+  color: var(--dsw-alias-label-primary, #26313d);
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-action.edrv-sfc-review:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(15, 157, 88, 0.1)); }
+
+/* 文件行：图标 + 文件名 + +N −M + ×/✓ @author ddj 2026年10月27号 */
+[data-edrv-diff-dock-shell] .edrv-sfc-list { display: flex; flex-direction: column; gap: 1px; max-height: 220px; overflow-y: auto; padding: 4px; }
+[data-edrv-diff-dock-shell] .edrv-sfc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  min-width: 0;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-row:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(15, 157, 88, 0.08)); }
+[data-edrv-diff-dock-shell] .edrv-sfc-row-missing .edrv-sfc-name { color: var(--dsw-alias-label-tertiary, #697586); text-decoration: line-through; }
+[data-edrv-diff-dock-shell] .edrv-sfc-missing-badge {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-state-warn-tertiary, rgba(180, 83, 9, 0.12));
+  color: var(--dsw-alias-state-warn-primary, #b45309);
+  font-size: 10.5px;
+  line-height: 18px;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-row:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #3b63d9); outline-offset: -2px; }
+[data-edrv-diff-dock-shell] .edrv-sfc-icon { display: inline-flex; align-items: center; flex: none; color: var(--dsw-alias-label-tertiary, #697586); }
+[data-edrv-diff-dock-shell] .edrv-sfc-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dsw-alias-label-primary, #26313d);
+  font-size: 12.5px;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-stat {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 5px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 20px;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-add { color: var(--dsw-alias-state-success-primary, #0f9d58); }
+[data-edrv-diff-dock-shell] .edrv-sfc-del { color: var(--dsw-alias-state-error-primary, #d9534f); }
+[data-edrv-diff-dock-shell] .edrv-sfc-row-actions { display: inline-flex; align-items: center; flex: none; gap: 1px; opacity: 0.8; }
+[data-edrv-diff-dock-shell] .edrv-sfc-row:hover .edrv-sfc-row-actions,
+[data-edrv-diff-dock-shell] .edrv-sfc-row:focus-within .edrv-sfc-row-actions { opacity: 1; }
+[data-edrv-diff-dock-shell] .edrv-sfc-icon-btn {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #52606d);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-icon-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(15, 157, 88, 0.12)); }
+[data-edrv-diff-dock-shell] .edrv-sfc-icon-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #3b63d9); outline-offset: -2px; }
+[data-edrv-diff-dock-shell] .edrv-sfc-icon-btn:disabled { opacity: 0.4; cursor: default; }
+[data-edrv-diff-dock-shell] .edrv-sfc-icon-btn.edrv-sfc-keep { color: var(--dsw-alias-state-success-primary, #0f7a45); }
+[data-edrv-diff-dock-shell] .edrv-sfc-icon-btn.edrv-sfc-undo { color: var(--dsw-alias-state-error-primary, #b64043); }
+
+/* 动作结果/错误提示（最短反馈，不新增 bar） @author ddj 2026年10月27号 */
+[data-edrv-diff-dock-shell] .edrv-sfc-notice {
+  padding: 2px 12px 8px;
+  color: var(--dsw-alias-label-tertiary, #697586);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+[data-edrv-diff-dock-shell] .edrv-sfc-notice.edrv-sfc-error { color: var(--dsw-alias-state-error-primary, #b64043); }

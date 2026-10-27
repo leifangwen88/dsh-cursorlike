@@ -1,0 +1,601 @@
+/**
+ * dsh-vscode-mode RPC contract — method names, per-method request/ok payloads,
+ * and the typed handler map shared by the host dispatcher and the client
+ * fetch wrapper. 载荷形状与历史实现一字不差，仅把隐式约定类型化。
+ *
+ * Purity rule: no node/react imports (same as types.ts).
+ * 作者 ddj 2026-08-20
+ */
+import type {
+  ArchiveBatch,
+  ArchiveEntry,
+  RecordView,
+  StaleHunk,
+} from './types.js'
+import type { CompatReport, DevFormInfo } from './compat.js'
+import type { RuleInfo, RuleProject, RuleRefInput, RuleSaveInput } from './rules.js'
+import type { SnippetEntry, SnippetInfo, SnippetProject, SnippetRefInput, SnippetSaveInput } from './snippets.js'
+import type { LspCompletionItem, LspCompletionList, LspDiagnostic, LspEnvInstallState, LspExtInfo, LspExtUpdate, LspHover, LspLocation, LspMarketItem, LspPosition, LspSemanticTokens, LspServerStatus, LspSignatureHelp, LspSymbol } from './lsp.js'
+import type { AiConfigPatch, AiConfigView, AiDirectoryView, AiEditRequest, AiEditResult, AiInlineRequest, AiInlineResult } from './ai.js'
+import type { DapAction, DapAdapterInfo, DapBreakpointAck, DapBreakpointInput, DapConfigSnippet, DapConfigSource, DapDebugConfig, DapFrameView, DapPhase, DapPollResult, DapProcessInfo, DapScopeView, DapVariableView } from './dap.js'
+import { DAP_ACTIONS } from './dap.js'
+import { appUrl } from './appUrl.js'
+import type { LoggerLevel } from './logger.js'
+import type { DecideReview, ReviewDetail, ReviewPage, ReviewRequest } from './review.js'
+
+/** webServer 精确路由。 */
+export const RPC_PATH = '/edrv/rpc'
+
+/**
+ * 图片扩展名（小写、无点）→ MIME。edrv.read base64 响应与 client 图片预览共用，
+ * 收敛在此避免 host/client 两处漂移。
+ * @author ddj 2026年09月08号
+ */
+export const IMAGE_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  avif: 'image/avif',
+  svg: 'image/svg+xml',
+}
+
+/**
+ * 路径 → 图片 MIME：按 basename 扩展名小写查 {@link IMAGE_MIME}，未命中回退 application/octet-stream。
+ * @author ddj 2026年09月08号
+ * @param path 文件路径（`/` 或 `\` 分隔均可）
+ * @returns MIME 字符串
+ */
+export function imageMimeOf(path: string): string {
+  const base = String(path || '').split(/[\\/]/).pop() || ''
+  const dot = base.lastIndexOf('.')
+  const ext = dot > 0 ? base.slice(dot + 1).toLowerCase() : ''
+  return IMAGE_MIME[ext] ?? 'application/octet-stream'
+}
+
+/** PDF 统一 MIME（host base64 响应与 client PDF 面板同源，避免两处漂移）。 */
+export const PDF_MIME = 'application/pdf'
+
+/**
+ * 会话级前置错误的规范文案：host requireSession 系与 client 错误识别共用同一常量，
+ * 避免文案漂移导致 client 端分类失效。跨端场景（桌面端/Web 端各自运行独立 DSH 实例、
+ * 会话列表互通但会话仅在一端激活）下，本端 host 取不到会话即返回「会话不存在」。
+ * @author ddj 2026年10月16号
+ */
+export const SESSION_MISSING_ERROR = '会话不存在'
+
+/** 会话存在但无工作区 cwd 时的规范文案（与 SESSION_MISSING_ERROR 同源共用）。 */
+export const SESSION_NO_WORKSPACE_ERROR = '会话无工作区'
+
+/**
+ * 路径 → 二进制预览 MIME：PDF 特判 {@link PDF_MIME}，其余走图片表回退 octet-stream。
+ * @author ddj 2026年09月22号
+ * @param path 文件路径（`/` 或 `\` 分隔均可）
+ * @returns MIME 字符串
+ */
+export function binaryMimeOf(path: string): string {
+  const base = String(path || '').split(/[\\/]/).pop() || ''
+  const dot = base.lastIndexOf('.')
+  if (dot > 0 && base.slice(dot + 1).toLowerCase() === 'pdf') return PDF_MIME
+  return imageMimeOf(path)
+}
+
+// --region 二进制预览通道（edrv.readBinary：响应侧原始字节，省 ~33% base64 编码开销）
+
+/** 二进制读成功响应头（octet-stream 携带元数据；同源请求可直接读取自定义头）。 */
+export const BINARY_READ_HEADERS = {
+  mime: 'x-edrv-mime',
+  size: 'x-edrv-size',
+  version: 'x-edrv-version',
+} as const
+
+/** edrv.readBinary 成功载荷（host Uint8Array 信封；routes 接线后以 octet-stream 原样直出）。 */
+export interface BinaryReadPayload {
+  bytes: Uint8Array
+  mime: string
+  size: number
+  version: string
+}
+
+/** 普通 JSON RPC 调用签名（回退通道复用；shared 不反向依赖 client 包装）。 */
+export type RpcJsonCall = <M extends RpcMethod>(method: M, args: RpcRequestMap[M]) => Promise<RpcResult<M>>
+
+/** 二进制预览读取统一结果：binary=新通道原始字节，base64=回退通道，probed=本次尝试过新通道。 */
+export type PreviewRead =
+  | ({ ok: true; via: 'binary' } & BinaryReadPayload)
+  | { ok: true; via: 'base64'; content: string; size: number; encoding?: 'base64'; mime?: string; version?: string; probed?: boolean }
+  | { ok: false; error: string; resolvedPath?: string; probed?: boolean }
+
+/** 通道探测状态：unknown=按次尝试；unwired=host 有 handler 但 routes 仍强制 JSON（本页不再尝试）。 */
+let binaryTransport: 'unknown' | 'unwired' = 'unknown'
+
+/**
+ * 二进制预览读取（edrv.readBinary，失败自动回退 edrv.read base64 现有路径）。
+ * 降级链：非 200 / 非 octet-stream / 元数据头缺失或长度不符 / 网络错 / host 未接线
+ * 把信封 JSON 化 → 一律立即回退 base64 路径，功能不降级；
+ * 其中「信封被 JSON 化」判定为未接线，探测一次后本页生命周期内不再尝试新通道
+ * （避免每次读图都付一次无效往返与大响应序列化）；其余失败不关停通道（瞬时故障可自愈）。
+ * @author ddj 2026年09月22号
+ * @param rpcJson 类型化 JSON RPC 调用（调用方传入 client rpc 包装）
+ * @param args edrv.readBinary 请求参数
+ * @returns 统一读取结果（via 标记实际通道；probed 供调用方做一次性回退日志）
+ */
+export async function readBinaryPreview(
+  rpcJson: RpcJsonCall,
+  args: RpcRequestMap['edrv.readBinary'],
+): Promise<PreviewRead> {
+  const attempted = binaryTransport !== 'unwired'
+  if (attempted) {
+    const direct = await tryBinaryRead(args)
+    if (direct) return direct
+  }
+  return fallbackRead(rpcJson, args, attempted)
+}
+
+/**
+ * 新通道单次尝试：响应完全符合约定才返回二进制结果，否则返回 null 触发回退。
+ * @author ddj 2026年09月22号
+ * @param args edrv.readBinary 请求参数
+ * @returns 二进制读取结果或 null（null=回退 base64）
+ */
+async function tryBinaryRead(args: RpcRequestMap['edrv.readBinary']): Promise<PreviewRead | null> {
+  try {
+    const res = await fetch(appUrl(RPC_PATH), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ method: 'edrv.readBinary', args }),
+    })
+    if (!res.ok) return null
+    const type = res.headers.get('content-type') ?? ''
+    if (!type.includes('application/octet-stream')) return noteJsonBody(res)
+    const size = Number(res.headers.get(BINARY_READ_HEADERS.size))
+    const bytes = new Uint8Array(await res.arrayBuffer())
+    // 元数据头长度必须与实际字节数一致，否则视为非本插件响应（防御中间层/代理）
+    if (!Number.isFinite(size) || size !== bytes.byteLength) return null
+    return {
+      ok: true,
+      via: 'binary',
+      bytes,
+      mime: res.headers.get(BINARY_READ_HEADERS.mime) || binaryMimeOf(args.path),
+      size: bytes.byteLength,
+      version: res.headers.get(BINARY_READ_HEADERS.version) || '',
+    }
+  } catch (error) {
+    return null // 网络错按瞬时故障处理：回退但不关停通道
+  }
+}
+
+/**
+ * 非 octet-stream 响应体判定：host 已有 edrv.readBinary 但 routes 尚未接线时，
+ * 二进制信封会被 JSON 序列化成 {bytes:{0:..}} 普通对象——识别到该形态即标记
+ * 「未接线」（本页不再尝试）；其余 JSON（错误响应/未知方法）仅本次回退不关停。
+ * @author ddj 2026年09月22号
+ * @param res JSON 形态的响应
+ * @returns 恒为 null（统一由调用方回退）
+ */
+async function noteJsonBody(res: Response): Promise<null> {
+  try {
+    const body = (await res.json()) as { ok?: unknown; binary?: { bytes?: unknown } } | null
+    if (body && body.ok === true && body.binary && typeof body.binary === 'object' && body.binary.bytes != null) {
+      binaryTransport = 'unwired'
+    }
+  } catch (error) {
+    /* 非 JSON（代理页/空体）：不判定，仅本次回退 */
+  }
+  return null
+}
+
+/**
+ * base64 回退读取（现有 edrv.read JSON 通道，载荷形状与历史实现一致）。
+ * @author ddj 2026年09月22号
+ * @param rpcJson 类型化 JSON RPC 调用
+ * @param args 请求参数
+ * @param attempted 本次是否尝试过新通道（回带给调用方做一次性日志）
+ * @returns 统一读取结果（调用失败转错误结果，不向上抛）
+ */
+async function fallbackRead(
+  rpcJson: RpcJsonCall,
+  args: RpcRequestMap['edrv.readBinary'],
+  attempted: boolean,
+): Promise<PreviewRead> {
+  const probed = attempted ? { probed: true } : {}
+  try {
+    const res = await rpcJson('edrv.read', { sessionId: args.sessionId, path: args.path, encoding: 'base64' })
+    if (!res.ok) {
+      const legacy = res as { ok: false; error: string; resolvedPath?: string }
+      return { ok: false, error: legacy.error, ...probed, ...(legacy.resolvedPath !== undefined ? { resolvedPath: legacy.resolvedPath } : {}) }
+    }
+    if (res.encoding !== 'base64') return { ok: false, error: '读取失败', ...probed }
+    return { ok: true, via: 'base64', content: res.content, size: res.size, encoding: res.encoding, mime: res.mime, version: res.version, ...probed }
+  } catch (error) {
+    return { ok: false, error: 'read异常:' + String(error), ...probed }
+  }
+}
+// --endregion
+
+/** 决策作用域：call=整条记录，hunk=单个差异块。 */
+export type RpcScope = 'call' | 'hunk'
+
+/** 目录树单项（edrv.listDir 返回；path 相对工作区根，'/' 分隔）。 */
+export interface TreeEntry {
+  name: string
+  path: string
+  type: 'file' | 'directory' | 'other'
+  size?: number
+}
+
+/** 内容搜索单条命中（edrv.searchContent 返回；path 相对工作区根，列为 1-based UTF-16）。 */
+export interface SearchContentMatch {
+  path: string
+  line: number
+  startColumn: number
+  endColumn: number
+  text: string
+}
+
+// --region 会话性能管理（edrv.perf.*）
+/** 一个已持久化会话的体积/活跃信息（edrv.perf.inventory 每行）。 */
+export interface PerfSession {
+  sessionId: string
+  workspaceKey: string
+  bytes: number
+  mtime: number
+  active: boolean
+  /** 官方侧栏已归档（0.1.7+ workspaceRegistry.archivedSessionIds 持久位；旧 host 不回传 → undefined，按 false 渲染）。 */
+  archived?: boolean
+  /** 官方侧栏已置顶（0.1.7+ workspaceRegistry.pinnedSessionIds 持久位；旧 host 不回传 → undefined，按 false 渲染）。 */
+  pinned?: boolean
+}
+
+/** 一个工作区的会话聚合（edrv.perf.inventory）。 */
+export interface PerfWorkspace {
+  workspaceKey: string
+  sessionCount: number
+  totalBytes: number
+  minMtime: number
+  maxMtime: number
+}
+
+/** 会话盘点汇总。 */
+export interface PerfTotals {
+  workspaces: number
+  sessions: number
+  totalBytes: number
+}
+
+/** 一次移出/恢复操作中的单个会话条目。 */
+export interface PerfMoveItem {
+  workspaceKey: string
+  sessionId: string
+  bytes: number
+}
+
+/** 一次移出操作的失败项。 */
+export interface PerfMoveFailure {
+  workspaceKey: string
+  sessionId: string
+  error: string
+}
+
+/** 侧车摘要（edrv.perf.sidecarSummary）：紧凑关键字段，不整份读 sidecar 进对话。 */
+export interface SidecarPerfSummary {
+  active: number
+  pendingByFile: { path: string; pending: number }[]
+  /** 新版 SQLite 主库 + WAL 文件字节数。 */
+  archiveBytes: number
+  /** 旧 JSON 历史体积；不计入新归档。 */
+  legacyArchiveBytes: number
+  /** 旧活跃 JSON 只读快照体积。 */
+  legacyActiveBytes: number
+}
+// --endregion
+
+/**
+ * 单个路径的磁盘新鲜度（edrv.versions 逐条结果）。
+ * version 为 host fs 的不透明新鲜度令牌（本地后端 = dev:ino:size:mtimeNs:ctimeNs）：
+ * 客户端只做字符串相等比较判「是否变化」，不解析其内部结构。
+ */
+export interface FileVersionItem {
+  /** 请求时的原始路径（原样回带，客户端按此对齐基线）。 */
+  path: string
+  /** 当前磁盘版本令牌；空串 = 该后端不提供版本，调用方应停用护栏。 */
+  version: string
+  /** 文件字节数（后端可报时）。 */
+  size?: number
+  /** 目标类型；'missing' = 已不存在（外部删除或路径解析失败）。 */
+  type?: 'file' | 'directory' | 'other' | 'missing'
+  /** 单条失败原因（仅诊断用；解析失败/缺失也可能只体现在 type='missing'）。 */
+  error?: string
+}
+
+/** 一条批量决策项（decideBatch 的 items 元素，与 accept/reject 单条参数同构）。 */
+export interface DecideItem {
+  callId: string
+  scope?: RpcScope
+  hunkIndex?: number
+  decision: 'accepted' | 'rejected'
+}
+
+/** 批量决策逐项结果。 */
+export interface DecideResult {
+  callId: string
+  ok: boolean
+  error?: string
+  record?: RecordView
+  /** 不采纳时该 hunk 的新文本已不在文件中（未改动文件，仅记录决策）。 */
+  stale?: boolean
+}
+
+/** 一份诊断日志文件的清单项（edrv.dlog.list；name 即请求回传用的 file 参数）。 */
+export interface DebugLogFileInfo {
+  name: string
+  bytes: number
+  mtimeMs: number
+}
+
+/** 诊断日志读取结果（edrv.dlog.read；tail 语义，truncated = 已按 maxBytes 截头保尾）。 */
+export interface DebugLogRead {
+  name: string
+  path: string
+  content: string
+  size: number
+  truncated: boolean
+}
+
+/** 界面状态镜像快照（edrv.uiState.get）：界面状态键值表 + 跨工作区全局键值表。 */
+export interface UiStateSnapshot {
+  /** 工作区级键值表（localStorage 键 → 字符串原值）。 */
+  keys: Record<string, string>
+  /** 全局键值表（与工作区无关，跨工作区共享）。 */
+  globals: Record<string, string>
+}
+
+/** 界面状态镜像写入补丁（edrv.uiState.set）：值 null 表示删除该键。 */
+export interface UiStatePatchInput {
+  /** 会话 id（缺省取唯一活跃会话）。 */
+  sessionId?: string
+  /** 工作区级增量补丁。 */
+  keys?: Record<string, string | null>
+  /** 全局增量补丁。 */
+  globals?: Record<string, string | null>
+}
+
+/** 每个方法的请求参数（sessionId 为公共可选字段）。 */
+export interface RpcRequestMap {
+  'edrv.review.list': ReviewRequest & { cursor?: number; history?: boolean; path?: string }
+  'edrv.review.detail': ReviewRequest & { id: string }
+  'edrv.review.decide': DecideReview
+  'edrv.list': { sessionId?: string; callIds?: string[]; skipStale?: boolean }
+  'edrv.accept': { sessionId?: string; callId: string; scope?: RpcScope; hunkIndex?: number }
+  'edrv.reject': { sessionId?: string; callId: string; scope?: RpcScope; hunkIndex?: number }
+  'edrv.decideBatch': { sessionId?: string; items: DecideItem[] }
+  'edrv.textPage': import('./textPages.js').TextPageArgs
+  'edrv.read': { sessionId?: string; path: string; encoding?: 'base64' }
+  'edrv.readBinary': { sessionId?: string; path: string }
+  'edrv.versions': { sessionId?: string; paths: string[] }
+  'edrv.original': { sessionId?: string; path: string }
+  'edrv.save': { sessionId?: string; path: string; content: string; rev?: string }
+  'edrv.saveBinary': { sessionId?: string; path: string; content: string; encoding: 'base64' }
+  'edrv.archiveList': { sessionId?: string }
+  'edrv.archivePage': { sessionId?: string; cursor?: string; limit?: number }
+  'edrv.archiveRead': { sessionId?: string; path?: string; batch?: number | null }
+  'edrv.rollback': { sessionId?: string; path: string; batch?: number }
+  'edrv.debug': { sessionId?: string; text: string; level?: LoggerLevel }
+  'edrv.dlog.list': { sessionId?: string }
+  'edrv.dlog.read': { sessionId?: string; file?: string; maxBytes?: number }
+  'edrv.dlog.clear': { sessionId?: string; file?: string }
+  'edrv.dlog.reveal': { sessionId?: string }
+  'edrv.searchFiles': { sessionId?: string; query: string }
+  'edrv.searchContent': { sessionId?: string; query: string; matchCase?: boolean; wholeWord?: boolean; regex?: boolean; maxResults?: number; include?: string[]; exclude?: string[]; force?: boolean }
+  'edrv.listDir': { sessionId?: string; path: string; force?: boolean }
+  'edrv.pathsExist': { sessionId?: string; paths: string[] }
+  'edrv.revealInExplorer': { sessionId?: string; path: string }
+  'edrv.fsCreateFile': { sessionId?: string; path: string }
+  'edrv.fsCreateDir': { sessionId?: string; path: string }
+  'edrv.fsRename': { sessionId?: string; path: string; newName: string }
+  'edrv.fsDelete': { sessionId?: string; path: string }
+  'edrv.fsCopy': { sessionId?: string; from: string; toDir: string }
+  'edrv.fsMove': { sessionId?: string; from: string; toDir: string }
+  'vscode.fileOpenSettingsGet': {}
+  'vscode.settingsDocumentPath': {}
+  'vscode.fileOpenSettingsUpdate': { fileOpenTool?: string; expectedRevision?: number }
+  'edrv.externalStat': { path: string }
+  'vscode.devFormGet': {}
+  'vscode.devFormSet': { enabled: boolean; path?: string }
+  'compat': {}
+  'edrv.lsp.status': { sessionId?: string }
+  'edrv.lsp.detect': {}
+  'edrv.lsp.sync': { sessionId?: string; path: string; text: string; version: number }
+  'edrv.lsp.close': { sessionId?: string; path: string }
+  'edrv.lsp.definition': { sessionId?: string; path: string; position: LspPosition }
+  'edrv.lsp.references': { sessionId?: string; path: string; position: LspPosition; includeDeclaration?: boolean }
+  'edrv.lsp.documentSymbol': { sessionId?: string; path: string }
+  'edrv.lsp.workspaceSymbol': { sessionId?: string; query: string }
+  'edrv.lsp.hover': { sessionId?: string; path: string; position: LspPosition }
+  'edrv.lsp.semanticTokens': { sessionId?: string; path: string }
+  'edrv.lsp.diagnostics': { sessionId?: string; path: string }
+  'edrv.lsp.completion': { sessionId?: string; path: string; position: LspPosition; context?: { triggerKind?: number; triggerCharacter?: string }; prefix?: string }
+  'edrv.lsp.resolveCompletion': { sessionId?: string; path: string; item: LspCompletionItem }
+  'edrv.lsp.signatureHelp': { sessionId?: string; path: string; position: LspPosition }
+  'edrv.lsp.redetect': { languageId: string }
+  'edrv.lsp.envInstall': { languageId: string; id: string }
+  'edrv.lsp.envState': {}
+  'edrv.lsp.configGet': {}
+  'edrv.lsp.configUpdate': { languageId: string; enabled?: boolean; command?: string; path?: string }
+  'edrv.lsp.ext.list': {}
+  'edrv.lsp.ext.install': { vsixPath?: string; namespace?: string; name?: string; version?: string }
+  'edrv.lsp.ext.uninstall': { id: string }
+  'edrv.lsp.ext.update': { id: string }
+  'edrv.lsp.ext.updates': {}
+  'edrv.lsp.ext.market': { query: string; size?: number }
+  'edrv.ai.inline': AiInlineRequest
+  'edrv.ai.edit': AiEditRequest
+  'edrv.ai.models': { force?: boolean }
+  'edrv.ai.configGet': {}
+  'edrv.ai.configUpdate': AiConfigPatch
+  'edrv.perf.inventory': { sessionId?: string }
+  'edrv.perf.sessionSize': { sessionId?: string; cwd: string }
+  'edrv.perf.movePlan': { workspaceKey?: string; sessionIds?: string[]; minBytes?: number; olderThanDays?: number }
+  'edrv.perf.moveOut': { workspaceKey: string; sessionIds: string[]; dryRun?: boolean }
+  'edrv.perf.restore': { workspaceKey: string; sessionId: string }
+  'edrv.perf.purgeArchive': { olderThanDays: number }
+  'edrv.perf.sidecarSummary': { sessionId?: string }
+  'edrv.perf.configGet': {}
+  'edrv.perf.configApply': {}
+  'edrv.perf.configUndo': {}
+  'rules.list': {}
+  'rules.read': RuleRefInput
+  'rules.save': RuleSaveInput
+  'rules.remove': RuleRefInput
+  'rules.toggle': RuleRefInput & { enabled: boolean }
+  'snippets.list': {}
+  'snippets.read': SnippetRefInput
+  'snippets.save': SnippetSaveInput
+  'snippets.remove': SnippetRefInput
+  'snippets.entries': { sessionId?: string }
+  'edrv.dap.configs': { workspacePath: string }
+  'edrv.dap.snippets': {}
+  'edrv.dap.processes': { processName?: string }
+  'edrv.dap.start': { config: DapDebugConfig; workspacePath: string; pid?: number }
+  'edrv.dap.stop': {}
+  'edrv.dap.poll': { since: number }
+  'edrv.dap.setBreakpoints': { workspacePath: string; file: string; points: DapBreakpointInput[] }
+  'edrv.dap.stackTrace': {}
+  'edrv.dap.scopes': { frameId: number }
+  'edrv.dap.variables': { ref: number }
+  'edrv.dap.evaluate': { expression: string; frameId?: number }
+  'edrv.dap.command': { action: DapAction }
+  /** 界面状态镜像读取：回填换 origin（重启换端口）后丢失的 localStorage 界面状态。 */
+  'edrv.uiState.get': { sessionId?: string }
+  /** 界面状态镜像写入：把客户端改动过的 `edrv.*` 键增量同步到 host 文件。 */
+  'edrv.uiState.set': UiStatePatchInput
+}
+
+export type RpcMethod = keyof RpcRequestMap
+
+/** 每个方法成功（ok:true）时的附加载荷。 */
+export interface RpcOkMap {
+  'edrv.review.list': { page: ReviewPage }
+  'edrv.review.detail': { detail: ReviewDetail }
+  'edrv.review.decide': { revision: number }
+  'edrv.list': { records: RecordView[] }
+  'edrv.accept': { record: RecordView }
+  'edrv.reject': { record: RecordView }
+  'edrv.decideBatch': { results: DecideResult[] }
+  'edrv.textPage': Extract<import('./textPages.js').TextPageResult, { ok: true }>
+  'edrv.read': { content: string; size: number; encoding?: 'base64'; mime?: string; version?: string }
+  'edrv.readBinary': { binary: BinaryReadPayload }
+  'edrv.versions': { items: FileVersionItem[] }
+  'edrv.original': { content: string; size: number; stale: StaleHunk[]; fallback: boolean }
+  'edrv.save': { rev?: string; conflict?: boolean }
+  'edrv.saveBinary': object
+  'edrv.archiveList': { entries: ArchiveEntry[] }
+  'edrv.archivePage': { entries: ArchiveEntry[]; nextCursor: string | null }
+  'edrv.archiveRead': { batches: ArchiveBatch[] }
+  'edrv.rollback': { path: string; batch: number | null }
+  'edrv.debug': object
+  'edrv.dlog.list': { root: string; files: DebugLogFileInfo[]; current: string | null }
+  'edrv.dlog.read': DebugLogRead
+  'edrv.dlog.clear': { name: string }
+  'edrv.dlog.reveal': { opened: boolean }
+  'edrv.searchFiles': { files: string[]; truncated: boolean }
+  'edrv.searchContent': { matches: SearchContentMatch[]; truncated: boolean; warning?: string }
+  'edrv.listDir': { root: string; path: string; entries: TreeEntry[] }
+  'edrv.pathsExist': { exists: Record<string, boolean> }
+  'edrv.revealInExplorer': { revealed: string }
+  'edrv.fsCreateFile': { path: string }
+  'edrv.fsCreateDir': { path: string }
+  'edrv.fsRename': { from: string; to: string }
+  'edrv.fsDelete': { path: string }
+  'edrv.fsCopy': { from: string; to: string }
+  'edrv.fsMove': { from: string; to: string }
+  'vscode.fileOpenSettingsGet': { fileOpenTool: string; revision?: number }
+  'vscode.settingsDocumentPath': { path: string }
+  'vscode.fileOpenSettingsUpdate': { fileOpenTool: string; revision?: number }
+  'edrv.externalStat': { kind: 'file' | 'directory' | 'missing' }
+  'vscode.devFormGet': { devForm: DevFormInfo }
+  'vscode.devFormSet': { devForm: DevFormInfo; restart: boolean }
+  'compat': { report: CompatReport }
+  'edrv.lsp.status': { servers: LspServerStatus[] }
+  'edrv.lsp.detect': { servers: LspServerStatus[] }
+  'edrv.lsp.sync': object
+  'edrv.lsp.close': object
+  'edrv.lsp.definition': { locations: LspLocation[]; truncated?: boolean }
+  'edrv.lsp.references': { locations: LspLocation[]; truncated?: boolean }
+  'edrv.lsp.documentSymbol': { symbols: LspSymbol[] }
+  'edrv.lsp.workspaceSymbol': { symbols: LspSymbol[]; truncated?: boolean }
+  'edrv.lsp.hover': { hover?: LspHover }
+  'edrv.lsp.semanticTokens': { tokens?: LspSemanticTokens }
+  'edrv.lsp.diagnostics': { diagnostics: LspDiagnostic[] }
+  'edrv.lsp.completion': { completions?: LspCompletionList }
+  'edrv.lsp.resolveCompletion': { item?: LspCompletionItem }
+  'edrv.lsp.signatureHelp': { signatureHelp?: LspSignatureHelp }
+  'edrv.lsp.redetect': { servers: LspServerStatus[] }
+  'edrv.lsp.envInstall': { started: boolean }
+  'edrv.lsp.envState': { states: LspEnvInstallState[] }
+  'edrv.lsp.configGet': { config: Record<string, unknown> }
+  'edrv.lsp.configUpdate': { config: Record<string, unknown>; servers?: LspServerStatus[] }
+  'edrv.lsp.ext.list': { extensions: LspExtInfo[] }
+  'edrv.lsp.ext.install': { extension: LspExtInfo; updated?: boolean }
+  'edrv.lsp.ext.uninstall': object
+  'edrv.lsp.ext.update': { extension: LspExtInfo; updated: boolean }
+  'edrv.lsp.ext.updates': { updates: LspExtUpdate[] }
+  'edrv.lsp.ext.market': { extensions: LspMarketItem[] }
+  'edrv.ai.inline': AiInlineResult
+  'edrv.ai.edit': AiEditResult
+  'edrv.ai.models': AiDirectoryView
+  'edrv.ai.configGet': AiConfigView
+  'edrv.ai.configUpdate': AiConfigView
+  'edrv.perf.inventory': { workspaces: PerfWorkspace[]; sessions: PerfSession[]; totals: PerfTotals; activeIds: string[] }
+  'edrv.perf.sessionSize': { bytes: number; exists: boolean }
+  'edrv.perf.movePlan': { items: PerfMoveItem[]; reclaimedBytes: number }
+  'edrv.perf.moveOut': { moved: PerfMoveItem[]; failures: PerfMoveFailure[]; reclaimedBytes: number }
+  'edrv.perf.restore': { restored: boolean; error?: string }
+  'edrv.perf.purgeArchive': { removed: number; reclaimedBytes: number }
+  'edrv.perf.sidecarSummary': SidecarPerfSummary
+  'edrv.perf.configGet': { profileDir?: string; patchPath?: string; applied: boolean; block: string; backup?: string }
+  'edrv.perf.configApply': { applied: boolean; backup: string; restart: boolean }
+  'edrv.perf.configUndo': { restored: boolean; error?: string; backup?: string }
+  'rules.list': { user: RuleInfo[]; projects: RuleProject[] }
+  'rules.read': { content: string }
+  'rules.save': { rule: RuleInfo }
+  'rules.remove': object
+  'rules.toggle': { rule: RuleInfo }
+  'snippets.list': { user: SnippetInfo[]; projects: SnippetProject[] }
+  'snippets.read': { content: string }
+  'snippets.save': { file: SnippetInfo }
+  'snippets.remove': object
+  'snippets.entries': { entries: SnippetEntry[] }
+  'edrv.dap.configs': { configs: DapDebugConfig[]; adapters: DapAdapterInfo[]; source: DapConfigSource }
+  'edrv.dap.snippets': { snippets: DapConfigSnippet[] }
+  'edrv.dap.processes': { items: DapProcessInfo[] }
+  'edrv.dap.start': { phase: DapPhase }
+  'edrv.dap.stop': object
+  'edrv.dap.poll': DapPollResult
+  'edrv.dap.setBreakpoints': { breakpoints: DapBreakpointAck[] }
+  'edrv.dap.stackTrace': { frames: DapFrameView[] }
+  'edrv.dap.scopes': { scopes: DapScopeView[] }
+  'edrv.dap.variables': { variables: DapVariableView[] }
+  'edrv.dap.evaluate': { result: string; type?: string; ref: number }
+  'edrv.dap.command': object
+  'edrv.uiState.get': UiStateSnapshot
+  'edrv.uiState.set': object
+}
+
+/** 统一响应：{ok:true, ...payload} 或 {ok:false, error}。 */
+export type RpcResult<M extends RpcMethod> =
+  | ({ ok: true } & RpcOkMap[M])
+  | { ok: false; error: string; code?: 'file-too-large'; reason?: Extract<import('./textPages.js').TextPageResult, { ok: false }>['reason'] }
+
+/** 每个方法的 handler 签名（host 分发表与 client 类型检查共用）。 */
+export type RpcHandler<M extends RpcMethod> = (
+  args: RpcRequestMap[M],
+) => Promise<RpcResult<M>>
+
+/** host RPC 分发表：method → handler。 */
+export type RpcHandlerMap = {
+  [M in RpcMethod]: RpcHandler<M>
+}

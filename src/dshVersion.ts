@@ -1,0 +1,167 @@
+/**
+ * dsh-vscode-mode host — DSH 核心版本探测与区间匹配（版本适配机制的地基）。
+ * 约定：以运行时可解析的 @deepseek-ai/dsh-settings 包版本代表 DSH 核心版本——
+ * 核心包发布锁步同版（rc.2 / alpha.2 全树同版实证），且该包是插件动态依赖面、
+ * exports 已放行 ./package.json。解析失败按候选降级（dsh-web-app / dsh-base / dsh），
+ * 全部失败返回空串（报告显示"未探测"，功能按能力探测运行）。
+ * 纯函数（parse / compare / inRange / familyLabel）可在 node 环境单测。
+ * 作者 ddj 2026-09-02
+ */
+import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+
+/** 归一化版本：主/次/补丁 + 预发布标识数组（0.1.2-alpha.2 → pre=['alpha','2']）。 */
+export interface DshVersion {
+  major: number
+  minor: number
+  patch: number
+  pre: string[]
+}
+
+const VERSION_RE = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
+
+/** 解析版本串；非法返回 null（不抛错）。 */
+export function parseDshVersion(input: string): DshVersion | null {
+  const match = VERSION_RE.exec(input.trim())
+  if (!match) return null
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    pre: match[4] ? match[4].split('.') : [],
+  }
+}
+
+/** 预发布标识比较：纯数字按值；数字段 < 字母段；字母按字典序（semver 规则）。 */
+function comparePreId(a: string, b: string): number {
+  const numericA = /^\d+$/.test(a)
+  const numericB = /^\d+$/.test(b)
+  if (numericA && numericB) return Number(a) - Number(b)
+  if (numericA !== numericB) return numericA ? -1 : 1
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+/** 比较两个已解析版本：a<b → -1；相等 → 0；a>b → 1。 */
+export function compareDshVersions(a: DshVersion, b: DshVersion): number {
+  for (const key of ['major', 'minor', 'patch'] as const) {
+    if (a[key] !== b[key]) return a[key] < b[key] ? -1 : 1
+  }
+  const samePre = a.pre.length === b.pre.length && a.pre.every((part, index) => part === b.pre[index])
+  if (samePre) return 0
+  if (a.pre.length === 0) return 1
+  if (b.pre.length === 0) return -1
+  const length = Math.max(a.pre.length, b.pre.length)
+  for (let i = 0; i < length; i++) {
+    const left = a.pre[i]
+    const right = b.pre[i]
+    if (left === undefined) return -1
+    if (right === undefined) return 1
+    const cmp = comparePreId(left, right)
+    if (cmp !== 0) return cmp
+  }
+  return 0
+}
+
+/** 版本区间（含端点）：from/to 为空表示该侧不设界。 */
+export interface DshRange {
+  from?: string
+  to?: string
+}
+
+/** 版本是否落在区间内（入参解析失败一律不命中）。 */
+export function inDshRange(version: DshVersion | null | undefined, range: DshRange): boolean {
+  if (!version) return false
+  if (range.from) {
+    const lower = parseDshVersion(range.from)
+    if (!lower || compareDshVersions(version, lower) < 0) return false
+  }
+  if (range.to) {
+    const upper = parseDshVersion(range.to)
+    if (!upper || compareDshVersions(version, upper) > 0) return false
+  }
+  return true
+}
+
+/**
+ * 版本线标签：报告与文档展示版本归属；不可解析返回 '未知'。
+ * 逐线自新到旧匹配，先命中先返回；仅已静态审计的 0.2.0-rc.1/rc.2、0.2.1-rc.2 精确标记。
+ * @author ddj 2026年09月02号 / 2026年09月18号 / 2026年09月22号 / 2026年09月29号 / 2026年10月08号 / 2026年10月19号
+ * @param input 版本串（如 '0.1.6-alpha.2'）
+ * @returns 版本线标签
+ */
+export function familyLabel(input: string): string {
+  const version = parseDshVersion(input)
+  if (!version) return '未知'
+  if (inDshRange(version, { from: '0.2.1-rc.2', to: '0.2.1-rc.2' })) return '0.2.1-rc.2（设置=profile Config；workingDirectory 投影跟随 cd；plugins.detail 扩展位；按能力探测）'
+  if (inDshRange(version, { from: '0.2.1-0', to: '0.2.1' })) return '0.2.1 线（rc.2 已逐版适配，其余按能力探测）'
+  if (inDshRange(version, { from: '0.2.0-rc.2', to: '0.2.0-rc.2' })) return '0.2.0-rc.2（设置=profile Config；按能力探测）'
+  if (inDshRange(version, { from: '0.2.0-rc.1', to: '0.2.0-rc.1' })) return '0.2.0-rc.1（设置=profile Config；按能力探测）'
+  if (inDshRange(version, { from: '0.2.0-0' })) return '0.2.0 及更新（除 rc.1/rc.2 外未经逐版适配；按能力探测）'
+  if (inDshRange(version, { from: '0.1.7-alpha.1' })) return '0.1.7-alpha.1 及更新（设置=profile Config + configForms 客户端面 + 会话 V4）'
+  if (inDshRange(version, { from: '0.1.6-alpha.2' })) return '0.1.6-alpha.2 及更新（会话多实例共存 + 回合改动卡片 + Office 侧栏预览 + 侧栏浏览器）'
+  if (inDshRange(version, { from: '0.1.6-alpha.1' })) return '0.1.6-alpha 及更新（MCP SDK v2 + Web 侧边栏终端 + 文件链接默认侧栏预览）'
+  if (inDshRange(version, { from: '0.1.5-alpha.1' })) return '0.1.5-alpha 及更新（官方右侧 Sidebar 编辑区 + sidebar.panellist）'
+  if (inDshRange(version, { from: '0.1.3-alpha.1' })) return '0.1.3-alpha 及更新（对话文件链接=remote.session.openWorkspacePath）'
+  if (inDshRange(version, { from: '0.1.2-alpha.1' })) return '0.1.2-alpha 及更新（设置 API=settings.installSection）'
+  return '0.1.0/0.1.1 rc 线（设置 API=installSettingsSection）'
+}
+
+/** 探测候选：按与插件运行环境相关性排序，逐个尝试解析 package.json。 */
+const VERSION_CANDIDATES = [
+  '@deepseek-ai/dsh-settings/package.json',
+  '@deepseek-ai/dsh-web-app/package.json',
+  '@deepseek-ai/dsh-base/package.json',
+  '@deepseek-ai/dsh/package.json',
+]
+
+let detectedVersion: string | undefined
+
+/**
+ * 宿主入口 require 锚点：process.argv[1] 指向运行中 DSH 的启动脚本
+ * （安装树 node_modules/@deepseek-ai/dsh/... 或 profile 树），从其所在目录
+ * 向上解析能命中宿主的 @deepseek-ai 包——避开本插件自身 node_modules 里的
+ * dev 依赖副本（dev-link 安装下 import.meta.url 锚点会先命中 rc 线副本，
+ * 曾致版本探测与 deps 加载错位到 0.1.0-rc.8，见 fileOpenSettings 的 hostImport）。
+ * @author ddj 2026年09月15号
+ * @returns 宿主锚点 require；argv[1] 缺失或不可用时 undefined
+ */
+function hostRequire(): NodeRequire | undefined {
+  const entry = process.argv[1]
+  if (!entry) return undefined
+  try {
+    return createRequire(entry)
+  } catch {
+    return undefined
+  }
+}
+
+/** 用指定 resolver 解析一个候选包版本（解析/读取失败返回 null）。 */
+function resolveVersionOf(specifier: string, resolver: NodeRequire): string | null {
+  try {
+    const file = resolver.resolve(specifier)
+    const pkg = JSON.parse(readFileSync(file, 'utf8')) as { version?: unknown }
+    if (typeof pkg.version === 'string' && parseDshVersion(pkg.version) !== null) return pkg.version
+  } catch {
+    /* exports 未放行或包缺失：尝试下一个候选 */
+  }
+  return null
+}
+
+/** 探测运行中 DSH 核心版本（模块级缓存；失败空串，不抛错）。 */
+export function detectDshVersion(): string {
+  if (detectedVersion !== undefined) return detectedVersion
+  detectedVersion = ''
+  // 宿主锚点优先（运行中 DSH 的 @deepseek-ai 树），失败回退本插件位置（测试/独立运行）。
+  const resolvers: Array<NodeRequire | undefined> = [hostRequire(), createRequire(import.meta.url)]
+  for (const resolver of resolvers) {
+    if (!resolver) continue
+    for (const specifier of VERSION_CANDIDATES) {
+      const version = resolveVersionOf(specifier, resolver)
+      if (version !== null) {
+        detectedVersion = version
+        return detectedVersion
+      }
+    }
+  }
+  return detectedVersion
+}

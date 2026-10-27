@@ -1,0 +1,203 @@
+/**
+ * dsh-vscode-mode host — 兼容层：与其他插件 / DSH 版本的统一探测、适配、护栏与自诊断。
+ * 职责：身份常量、外部插件探测、路由冲突与重复装配检测、兼容性报告构建。
+ * 作者 ddj 2026-08-24
+ */
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { loadSettingsDeps, schemaLibName, settingsInstallNote, settingsInstallStrategy, configVolatileState } from './fileOpenSettings.js'
+import { readDevForm } from './devForm.js'
+import { compareDshVersions, detectDshVersion, familyLabel, parseDshVersion } from './dshVersion.js'
+import { SKILL_PREFIXES, skillGroupState } from './skills.js'
+import type { CompatAdapter, CompatReport } from './shared/compat.js'
+import type { Ctx } from './store.js'
+import { ROUTE_PREFIX } from './paths.js'
+
+export { ROUTE_PREFIX }
+
+export const PLUGIN_NAME = 'dsh-vscode-mode'
+export const MCP_PACKAGE = '@deepseek-ai/dsh-mcp-client'
+/** 项目级 MCP 的 loader entry id 固定前缀（区分 profile 全局 MCP；loader id 不能用 ':'，故用 '.'）。 */
+export const PROJECT_ENTRY_PREFIX = 'vsm-mcp.'
+/** 旧版项目 MCP 条目前缀（升级残留识别，不显示为全局 MCP）。 */
+export const LEGACY_PROJECT_PREFIX = 'vsm-mcp:'
+
+/** 判断新旧格式项目 MCP 条目 id（旧残留不被视为全局 MCP）。 */
+export function isProjectEntryId(id: string): boolean {
+  return id.startsWith(PROJECT_ENTRY_PREFIX) || id.startsWith(LEGACY_PROJECT_PREFIX)
+}
+
+/** 从项目条目 id 解析 workspace hash（新旧格式通用）。 */
+export function entryHash(id: string): string | undefined {
+  if (id.startsWith(PROJECT_ENTRY_PREFIX)) return id.slice(PROJECT_ENTRY_PREFIX.length).split('.')[0]
+  if (id.startsWith(LEGACY_PROJECT_PREFIX)) return id.slice(LEGACY_PROJECT_PREFIX.length).split(':')[0]
+  return undefined
+}
+
+/** 读取随包 package.json 版本号（缺失/解析失败降级为空串）。 */
+export function pluginVersionOf(): string {
+  try {
+    const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json')
+    const pkg = JSON.parse(readFileSync(file, 'utf8')) as { version?: unknown }
+    return typeof pkg.version === 'string' ? pkg.version : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 探测外部插件/服务适配状态（depsAvailable 由调用方注入，便于测试）。 */
+export function detectExternal(ctx: Ctx, depsAvailable: boolean): CompatAdapter[] {
+  const settings = ctx.get('settings') as { describe?: unknown; update?: unknown } | undefined
+  const hasSettings = Boolean(settings?.describe || settings?.update)
+  const sub = ctx.get('subprocess') as { spawn?: unknown } | undefined
+  const skills = skillGroupState()
+  return [
+    { name: '设置持久化（@deepseek-ai/dsh-settings）', active: depsAvailable, note: depsAvailable ? '设置 section 已安装（schema: ' + (schemaLibName() || '未知') + '）' : '未安装：fileOpenTool 持久化降级为配置值' },
+    { name: 'settings 服务', active: hasSettings, note: hasSettings ? '可读写设置' : '不可用（设置读写走配置回退）' },
+    { name: '文件浏览器打开（subprocess 服务）', active: typeof sub?.spawn === 'function', note: typeof sub?.spawn === 'function' ? '可定位/打开 OS 文件浏览器' : '不可用（右键「在文件浏览器中打开」将提示失败）' },
+    // 新增项一律追加在末尾：既有下标被 tests/compat.test.ts 断言，不得前插。
+    { name: '插件技能组（' + SKILL_PREFIXES[0] + '*）', active: skills.mounted, note: skills.note + (skills.mounted && skills.dir ? '（' + skills.dir + '）' : '') },
+  ]
+}
+
+/** 本插件已注册的路由（kind → path 集合），冲突检测时排除自身，避免自误报。 */
+const ownRoutes = { exact: new Set<string>(), prefixes: new Set<string>() }
+
+/** 清空本插件路由记录（registerRoutes 装配开始时调用，热重载不残留）。 */
+export function resetOwnRoutes(): void {
+  ownRoutes.exact.clear()
+  ownRoutes.prefixes.clear()
+}
+
+/** 记录本插件路由（routes.ts 注册成功时调用）。 */
+export function noteOwnRoute(kind: 'exact' | 'prefix', path: string): void {
+  const table = kind === 'exact' ? ownRoutes.exact : ownRoutes.prefixes
+  table.add(path)
+}
+
+/** 检测路由前缀占用与重叠（排除本插件自有路由；内部表不可读视为无冲突）。 */
+export function routeConflict(web: unknown, prefix: string): string | null {
+  try {
+    const w = web as { exact?: Map<unknown, unknown>; prefixes?: Map<unknown, unknown> } | undefined
+    const exact = w?.exact
+    const prefixes = w?.prefixes
+    if (exact instanceof Map) {
+      for (const path of exact.keys()) {
+        const other = String(path)
+        if (other.startsWith(prefix + '/') && !ownRoutes.exact.has(other)) {
+          return '精确路由 ' + other + ' 与 ' + prefix + ' 前缀重叠（可能来自热重载残留或其他插件）'
+        }
+      }
+    }
+    if (prefixes instanceof Map) {
+      for (const path of prefixes.keys()) {
+        const other = String(path)
+        if (other !== prefix && (other.startsWith(prefix + '/') || prefix.startsWith(other + '/')) && !ownRoutes.prefixes.has(other)) {
+          return '路由前缀 ' + prefix + ' 与 ' + other + ' 重叠'
+        }
+      }
+    }
+  } catch {
+    /* 内部表不可读时放弃检查 */
+  }
+  return null
+}
+
+/** 检测本插件是否被重复装配（bundle 层 + 用户层重复 insert 的自诊断）。 */
+export function duplicateEntries(ctx: Ctx): string[] {
+  const loader = ctx.get('loader') as { entries?: () => Iterable<{ id?: unknown; options?: { name?: unknown } }> } | undefined
+  if (!loader || typeof loader.entries !== 'function') return []
+  const own = [...loader.entries()].filter((entry) => String(entry.options?.name ?? entry.id ?? '') === PLUGIN_NAME)
+  if (own.length > 1) {
+    return ['检测到 ' + own.length + ' 个 ' + PLUGIN_NAME + ' loader 条目（重复装配）。请删除 profile 用户层 cordis.patch.yml 的重复 insert（或运行 dev_fix_patch 清理）']
+  }
+  return []
+}
+
+/** 护栏适配状态：路由前缀唯一性 + 插件装配唯一性。 */
+export function detectGuards(ctx: Ctx): CompatAdapter[] {
+  const web = ctx.get('webServer')
+  const conflict = web ? routeConflict(web, ROUTE_PREFIX) : null
+  const duplicates = duplicateEntries(ctx)
+  return [
+    { name: '路由前缀 ' + ROUTE_PREFIX, active: !conflict, note: conflict ?? '无冲突' },
+    { name: '插件装配唯一性', active: duplicates.length === 0, note: duplicates[0] ?? '唯一装配' },
+  ]
+}
+
+/** Config volatile 标记起效的版本线（此前设置走 section 安装，与 volatile 无关）。 */
+const CONFIG_VOLATILE_MIN = '0.1.7-alpha.1'
+
+/** 版本适配机制状态行：DSH 版本探测 + 设置 section 安装策略 + Config volatile 标记。 */
+export function versionAdapters(dshVersion: string): CompatAdapter[] {
+  const adapters: CompatAdapter[] = []
+  const parsed = parseDshVersion(dshVersion)
+  if (dshVersion === '') {
+    adapters.push({ name: 'DSH 版本', active: false, note: '未探测到版本号（能力探测模式运行）' })
+  } else if (!parsed) {
+    adapters.push({ name: 'DSH 版本', active: false, note: '无法解析版本号 ' + dshVersion + '（能力探测模式运行）' })
+  } else {
+    adapters.push({ name: 'DSH 版本', active: true, note: dshVersion + ' · ' + familyLabel(dshVersion) })
+  }
+  const strategy = settingsInstallStrategy()
+  adapters.push({
+    name: '设置 section 安装（版本适配）',
+    active: strategy === 'legacy' || strategy === 'service' || strategy === 'forms',
+    note: settingsInstallNote(),
+  })
+  // 追加在末尾（既有下标有断言）；仅 Config 按 volatile 语义构建过才展示该行
+  const volatileState = configVolatileState()
+  if (volatileState.requested) {
+    const volatileOk = volatileState.total > 0 && volatileState.marked === volatileState.total
+    adapters.push({
+      name: 'Config volatile 字段（0.1.7 设置页）',
+      active: volatileOk,
+      note: volatileOk
+        ? volatileState.marked + '/' + volatileState.total + ' 已标记（SettingsForms 可下发本插件 ns）'
+        : volatileState.marked + '/' + volatileState.total + ' 已标记：schemastery 依赖过旧无 .volatile()，0.1.7 设置页不可用',
+    })
+  }
+  return adapters
+}
+
+/**
+ * 构建完整兼容性报告（RPC 与启动日志共用）。
+ * @author ddj 2026年08月24号 / 2026年09月02号 / 2026年09月23号
+ * @param ctx DSH host 上下文
+ * @param options 测试注入：depsAvailable 跳过动态导入、version 固定插件版本、dshVersion 固定 DSH 版本
+ * @returns 兼容性报告
+ */
+export async function buildReport(
+  ctx: Ctx,
+  options?: { depsAvailable?: boolean; version?: string; dshVersion?: string },
+): Promise<CompatReport> {
+  const deps = options?.depsAvailable ?? (await loadSettingsDeps()) !== null
+  const dshVersion = options?.dshVersion ?? detectDshVersion()
+  const external = detectExternal(ctx, deps)
+  const guards = detectGuards(ctx)
+  const adapters = versionAdapters(dshVersion)
+  const warnings: string[] = []
+  if (!deps) warnings.push('未安装 @deepseek-ai/dsh-settings：文件打开工具设置持久化不可用（降级为配置值）')
+  const strategy = settingsInstallStrategy()
+  if (strategy === 'none') warnings.push('设置 section 安装不可用：' + settingsInstallNote())
+  const parsed = parseDshVersion(dshVersion)
+  // 0.1.7 线上 Config 未完成 volatile 标记 = 设置页不可用（ns 不下发），显式告警而非静默
+  const volatileState = configVolatileState()
+  const volatileMin = parseDshVersion(CONFIG_VOLATILE_MIN)
+  if (volatileState.requested && volatileState.marked < volatileState.total && parsed && volatileMin && compareDshVersions(parsed, volatileMin) >= 0) {
+    warnings.push('插件 Config volatile 标记不完整（' + volatileState.marked + '/' + volatileState.total + '）：@deepseek-ai/schemastery 依赖过旧，0.1.7 设置页不可用（重装插件依赖后重启 DSH）')
+  }
+  for (const guard of guards) {
+    if (!guard.active && guard.note) warnings.push(guard.note)
+  }
+  return {
+    pluginVersion: options?.version ?? pluginVersionOf(),
+    external,
+    guards,
+    adapters,
+    warnings,
+    devForm: readDevForm(ctx),
+    dshVersion,
+  }
+}

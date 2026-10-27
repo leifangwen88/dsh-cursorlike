@@ -1,0 +1,45 @@
+# 依赖与构建产物
+node_modules/
+lib/
+*.tsbuildinfo
+*.tgz
+.tmp-build/
+.pnpm-store/
+.npm-cache/
+
+# 运行时 sidecar / 调试日志（审查插件写在工作区的旁车，不入库）
+.dsh-edit-review.json
+.dsh-edit-review-archive.json
+.dsh-edit-review-debug.log
+.dsh-vscode-mode-tree.json
+
+# 本地工具 / 编辑器缓存（codegraph 索引、workbuddy、计划草稿等）
+.codegraph/
+.workbuddy/
+plans/
+codegraph.json
+.mcp.json
+
+# 本机调试配置（launch 配置含本机进程/项目路径，不入库）
+.dsh/launch.json
+.vscode/
+
+# 本工作区的 agent 规则/技能与本地配置（含内部路径与开发说明，不入公开仓库）
+/.dsh/
+
+# 本地环境
+.DS_Store
+Thumbs.db
+.DS_Store/
+Thumbs.db
+pnpm-lock.yaml.*.tmp
+pnpm-lock.yaml.??????
+
+# 本地临时产物（交换脚本日志、冒烟脚本等）
+tmp/
+
+# 真实仓库数据样本（含内部路径/作者/提交信息，不入库；本地存在时对应用例自动跑）
+tests/fixtures/*.xml
+
+# apply-patches.mjs 备份文件
+*.bak-patch-*

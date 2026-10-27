@@ -1,0 +1,268 @@
+/**
+ * dsh-vscode-mode shared diff primitives — 快照指纹、hunk 规范化与安全定位。
+ * 不依赖 Node/React，host 与 browser 共用，避免各层用不同 indexOf 语义。
+ * 作者 ddj 2026-08-24
+ */
+import type { Hunk, RecordBase } from './types.js'
+
+/** 文件读取状态，区分真实空文件与无法读取/过大的文件。 */
+export type ReadState =
+  | { kind: 'content'; content: string }
+  | { kind: 'missing' }
+  | { kind: 'unavailable' }
+
+/** 文本中的一个半开区间 [start,end)。 */
+export interface TextRange {
+  start: number
+  end: number
+}
+
+/** 一条 hunk 在当前内容中的定位结果。 */
+export interface HunkLocation extends TextRange {
+  idx: number
+  hunk: Hunk
+  matched: boolean
+}
+
+/** 统一取对应 hunk；callHunk 只用于旧记录缺失 hunks 时兼容。 */
+export function preciseHunk(record: Pick<RecordBase, 'hunks' | 'callHunk'>, idx: number): Hunk | null {
+  return hunkOf(record, idx)
+}
+
+/** 轻量、确定性的字符串指纹；不引入 Node crypto。 */
+export function fingerprint(text: string | null | undefined): string | null {
+  if (typeof text !== 'string') return null
+  let hash = 2166136261
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return 'fnv1a:' + (hash >>> 0).toString(16) + ':' + text.length
+}
+
+/** 取记录第 idx 个有效 hunk；只有记录缺 hunk 时才回退 callHunk。 */
+export function hunkOf(record: Pick<RecordBase, 'hunks' | 'callHunk'>, idx: number): Hunk | null {
+  const hunk = Array.isArray(record.hunks) ? record.hunks[idx] : undefined
+  if (hunk && typeof hunk.newText === 'string') return hunk
+  if (idx === 0 && record.callHunk && typeof record.callHunk.newText === 'string') return record.callHunk
+  return null
+}
+
+/** hunk 是否表示没有实际内容变化。 */
+export function isNoopHunk(hunk: Hunk | null | undefined): boolean {
+  return !!hunk && hunk.oldText !== null && hunk.oldText === hunk.newText
+}
+
+/**
+ * 差异比较口径归一化：剥离 UTF-8 BOM、统一 CRLF 为 LF。
+ * 背景：外部工具（pwsh/编辑器）可能改变 BOM/行尾，导致 after 指纹与 hunk
+ * 定位在内容语义未变的情况下误报 conflict，把待确认修改从 UI 排除。
+ * @author ddj 2026年09月09号
+ */
+export function normalizeForCompare(text: string): string {
+  return text.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+}
+
+/** 归一化一个 hunk 的两侧文本（与 normalizeForCompare 同口径）。 */
+export function normalizeHunk(hunk: Hunk): Hunk {
+  return {
+    oldText: hunk.oldText === null ? null : normalizeForCompare(hunk.oldText),
+    newText: normalizeForCompare(hunk.newText),
+  }
+}
+
+/** splitLines 的空文本语义：真实空文件没有一行变更内容。 */
+export function splitLines(text: string): string[] {
+  return text.length ? text.split('\n') : []
+}
+
+/** 为执行后 hunk 写入快照坐标；空 newText 通过 before/after 公共边界定位删除点。 */
+export function annotateHunk(hunk: Hunk, before: string | null, after: string | null): Hunk {
+  return annotateHunks([hunk], before, after)[0]
+}
+
+/** 按文件顺序为多 hunk 写入不重复的 after 坐标。 */
+export function annotateHunks(hunks: Hunk[], before: string | null, after: string | null): Hunk[] {
+  if (typeof after !== 'string') return hunks
+  let cursor = 0
+  return hunks.map((hunk) => {
+    if (hunk.newText.length > 0) {
+      const start = after.indexOf(hunk.newText, cursor)
+      if (start >= 0) {
+        cursor = start + hunk.newText.length
+        return { ...hunk, afterStart: start, afterEnd: cursor }
+      }
+      return hunk
+    }
+    if (hunks.length !== 1 || typeof before !== 'string' || before === after || hunk.oldText === null) return hunk
+    const prefix = commonPrefix(before, after)
+    const suffix = commonSuffix(before, after, prefix)
+    const removedStart = prefix
+    const removedEnd = Math.max(removedStart, before.length - suffix)
+    return { ...hunk, afterStart: removedStart, afterEnd: removedStart, beforeStart: removedStart, beforeEnd: removedEnd }
+  })
+}
+
+/** 计算两个文本的最长公共前缀长度。 */
+function commonPrefix(left: string, right: string): number {
+  const limit = Math.min(left.length, right.length)
+  let i = 0
+  while (i < limit && left.charCodeAt(i) === right.charCodeAt(i)) i++
+  return i
+}
+
+/** 计算不与 prefix 重叠的最长公共后缀长度。 */
+function commonSuffix(left: string, right: string, prefix: number): number {
+  const limit = Math.min(left.length, right.length) - prefix
+  let i = 0
+  while (i < limit && left.charCodeAt(left.length - 1 - i) === right.charCodeAt(right.length - 1 - i)) i++
+  return i
+}
+
+/** 计算 index 前的 0 基行数。 */
+export function lineBefore(text: string, index: number): number {
+  let n = 0
+  const end = Math.max(0, Math.min(index, text.length))
+  for (let i = 0; i < end; i++) if (text.charCodeAt(i) === 10) n++
+  return n
+}
+
+/** 每种搜索串只推进一次，保持原来从头开始的非重叠匹配顺序。 */
+interface MatchState {
+  ranges: TextRange[]
+  next: number
+  done: boolean
+}
+
+/**
+ * 懒扫描候选：先找 cursor 后未占用项，找不到再回退至首个未占用项。
+ * @author ddj 2026年09月29号
+ * @param content 当前内容
+ * @param needle 搜索串
+ * @param cursor 前一块的结束位置
+ * @param occupied 已选区间
+ * @param state 此搜索串已扫描的候选
+ * @returns 与完整候选列表双轮查找相同的匹配
+ */
+function findCandidate(content: string, needle: string, cursor: number, occupied: TextRange[], state: MatchState): TextRange | undefined {
+  if (!needle.length) return undefined
+  let fallback: TextRange | undefined
+  for (let i = 0; i < state.ranges.length; i++) {
+    const range = state.ranges[i]
+    if (occupied.some((used) => overlaps(range, used))) continue
+    if (range.start >= cursor) return range
+    if (!fallback) fallback = range
+  }
+  while (!state.done) {
+    const at = content.indexOf(needle, state.next)
+    if (at < 0) { state.done = true; break }
+    const range = { start: at, end: at + needle.length }
+    state.ranges.push(range)
+    state.next = range.end
+    if (occupied.some((used) => overlaps(range, used))) continue
+    if (range.start >= cursor) return range
+    if (!fallback) fallback = range
+  }
+  return fallback
+}
+
+/**
+ * 从 after 快照定位所有 hunk，按 hunk 顺序优先选未占用且靠近前一块的候选。
+ * 若 hunk 带 afterStart/afterEnd，则优先验证快照坐标，避免重复文本错配。
+ * @author ddj 2026年08月24号
+ * @param content 当前文件内容
+ * @param hunks 待定位 hunk
+ * @returns 每个 hunk 一个结果，matched=false 表示冲突/stale
+ */
+export function locateHunks(content: string, hunks: Hunk[]): HunkLocation[] {
+  const locations: HunkLocation[] = []
+  let cursor = 0
+  const occupied: TextRange[] = []
+  const matches = new Map<string, MatchState>()
+  for (let idx = 0; idx < hunks.length; idx++) {
+    const hunk = hunks[idx]
+    const newText = hunk.newText
+    const snapshot = Number.isInteger(hunk.afterStart) && Number.isInteger(hunk.afterEnd)
+      ? { start: hunk.afterStart as number, end: hunk.afterEnd as number }
+      : null
+    const snapshotMatches = snapshot && snapshot.start >= 0 && snapshot.end >= snapshot.start
+      && (newText.length === 0 || content.slice(snapshot.start, snapshot.end) === newText)
+      ? snapshot
+      : null
+    let candidate: TextRange | undefined
+    if (snapshotMatches) {
+      if (!occupied.some((used) => overlaps(snapshotMatches, used))) candidate = snapshotMatches
+    } else if (newText.length) {
+      let state = matches.get(newText)
+      if (!state) { state = { ranges: [], next: 0, done: false }; matches.set(newText, state) }
+      candidate = findCandidate(content, newText, cursor, occupied, state)
+    }
+    if (candidate) {
+      locations.push({ idx, hunk, ...candidate, matched: true })
+      occupied.push(candidate)
+      cursor = Math.max(cursor, candidate.end)
+      continue
+    }
+    if (newText.length === 0 && hunk.afterStart === undefined && hunk.afterEnd === undefined && content.length === 0) {
+      const point = { start: 0, end: 0 }
+      locations.push({ idx, hunk, ...point, matched: true })
+      continue
+    }
+    if (newText.length === 0 && hunk.afterStart !== undefined && hunk.afterEnd !== undefined
+      && hunk.afterStart === hunk.afterEnd && hunk.afterStart >= 0 && hunk.afterStart <= content.length) {
+      const point = { start: hunk.afterStart, end: hunk.afterEnd }
+      if (!occupied.some((used) => overlaps(point, used))) {
+        locations.push({ idx, hunk, ...point, matched: true })
+        occupied.push(point)
+        cursor = Math.max(cursor, point.end)
+        continue
+      }
+    }
+    locations.push({ idx, hunk, start: -1, end: -1, matched: false })
+  }
+  return locations
+}
+
+/** 判断两个半开区间是否重叠。零长度区间只与同一位置的零长度区间重叠。 */
+function overlaps(left: TextRange, right: TextRange): boolean {
+  if (left.start === left.end || right.start === right.end) return left.start === right.start && left.end === right.end
+  return left.start < right.end && right.start < left.end
+}
+
+/** 在可定位区间上执行一次 hunk 反向替换。 */
+export function replaceRange(content: string, location: HunkLocation, reverse = false): string | null {
+  if (!location.matched || location.start < 0) return null
+  const replacement = reverse ? (location.hunk.oldText ?? '') : location.hunk.newText
+  return content.slice(0, location.start) + replacement + content.slice(location.end)
+}
+
+/**
+ * 按位置倒序收集片段，最后一次拼接；非互斥区间退回原替换语义。
+ * @author ddj 2026年09月29号
+ * @param content 当前文件内容
+ * @param locations 已定位区间
+ * @param reverse 是否反向应用
+ * @returns 合成内容及失效块索引
+ */
+export function applyLocations(content: string, locations: HunkLocation[], reverse = false): { content: string; stale: number[] } {
+  const stale = locations.filter((location) => !location.matched).map((location) => location.idx)
+  const matched = locations.filter((location) => location.matched).sort((a, b) => b.start - a.start)
+  const parts: string[] = []
+  let end = content.length
+  for (const location of matched) {
+    if (location.start < 0 || location.end > end) {
+      let out = content
+      for (const item of matched) {
+        const next = replaceRange(out, item, reverse)
+        if (next === null) stale.push(item.idx)
+        else out = next
+      }
+      return { content: out, stale: stale.sort((a, b) => a - b) }
+    }
+    parts.push(content.slice(location.end, end), reverse ? (location.hunk.oldText ?? '') : location.hunk.newText)
+    end = location.start
+  }
+  parts.push(content.slice(0, end))
+  parts.reverse()
+  return { content: parts.join(''), stale: stale.sort((a, b) => a - b) }
+}

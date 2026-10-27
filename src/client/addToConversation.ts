@@ -1,0 +1,646 @@
+/**
+ * dsh-vscode-mode client — 把文件/选中内容注入会话对话输入框（composer draft）。
+ * 复用 DSH 官方输入门面：ctx.conversation.input.for(sessions.scope(sessionId)) → SessionInput。
+ * 引用 chip：insertReference（reference source，发送时序列化为 @path 文本）；忙态降级为纯文本 setDraft。
+ * 纯函数部分 node 可单测。
+ * 作者 ddj 2026-08-25
+ */
+
+import { appUrl } from '../shared/appUrl.js'
+
+/** 文件引用可选的行区间（选中内容用）。 */
+export interface RefRange {
+  startLine: number
+  endLine: number
+}
+
+/** 引用动作的返回状态（failed = 两条通道都没写成，内容未被改动）。 */
+export type AddOutcome = 'ok' | 'busy' | 'unavailable' | 'failed'
+
+/** 引用外观类型：文件/文件夹（DSH reference source 均支持）。 */
+export type RefAppearance = 'file' | 'folder'
+
+/** 把追加引用结果映射为可读文案（ok 用 okText；busy 提示已降级纯文本；unavailable 提示不可用）。
+ * @author ddj 2026年09月03号 / 2026年09月11号
+ * @param outcome 追加结果状态
+ * @param okText 成功文案（如「已添加文件引用」/「已添加文件夹引用」）
+ * @returns 状态栏/通知用文案
+ */
+export function statusOfAdd(outcome: AddOutcome, okText: string): string {
+  if (outcome === 'ok') return okText
+  if (outcome === 'busy') return okText + '（已降级纯文本）'
+  if (outcome === 'failed') return '添加引用失败（输入框忙或未就绪，请重试）'
+  return '无法添加到对话（无会话或输入框不可用）'
+}
+
+/** DSH reference source 名（dsh-client-ui-reference 注册的 @file/@session 统一源）。 */
+const REF_SOURCE = 'reference'
+
+/** 输入快照的引用出现项（clipboard 投影中的位置与长度，用于坐标换算）。 */
+export interface OccurrenceLike {
+  /** clipboard 投影中的起始偏移（chip 左边界）。 */
+  offset?: number
+  /** clipboard 投影中的长度（chip 展开成 `@path` 全文的长度）。 */
+  length?: number
+}
+
+/** 输入快照（draft 为 clipboard 投影；occurrences 为 chip 列表）。 */
+export interface CursorSnapshot {
+  draft: string
+  draftRev: number
+  occurrences?: readonly OccurrenceLike[]
+}
+
+/**
+ * 把 clipboard 投影的末尾折算成 **detect 投影**的末尾。
+ *
+ * ⚠️ 两个投影对 chip 的计长不同，混用会直接毁掉已插入的引用（真实缺陷，勿改回 `draft.length`）：
+ * DSH 的 `$composerLayout()` 中 chip 在 detect 投影里只贡献 **1 个 U+FFFC**，
+ * 在 clipboard 投影里贡献 `clipboardText` 全文
+ * （`pushLeaf('chip', kid, '￼', kid.getTextContent())`）。
+ * 而 `insertReference(ref, span)` 的 span 走 detect 坐标并经 `selectSpan` 校验：
+ * `span.end > layout.detectLength` 时返回 null → 插入失败。
+ *
+ * 旧实现直接用 `draft.length`（clipboard 长度）当 detect 起点：草稿里一旦有 chip，
+ * 该值就超出 detect 长度 → 插入被拒 → 落入 `setDraft` 兜底，
+ * 而 `setDraft` 会整篇重建并剔除 U+FFFC（`text.replace(REFERENCE_PLACEHOLDER_RE, '')`），
+ * 于是**既有 chip 被销毁、引用退化为重复的纯文本**（即「连续添加多个引用显示异常」）。
+ *
+ * 换算：每个 chip 在 clipboard 中多算了 `length - 1`，逐个扣回即得 detect 末尾。
+ * 无 occurrences（旧版 DSH）时退化为 `draft.length`，与旧行为一致。
+ * @author ddj 2026年09月11号
+ * @param snapshot 输入快照
+ * @returns detect 投影中的文档末尾偏移
+ */
+export function detectEndOf(snapshot: CursorSnapshot): number {
+  const total = String(snapshot?.draft ?? '').length
+  const occurrences = snapshot?.occurrences
+  if (!Array.isArray(occurrences) || !occurrences.length) return total
+  let clipped = 0
+  for (const occurrence of occurrences) {
+    const length = Number(occurrence?.length ?? 0)
+    if (!Number.isFinite(length) || length <= 1) continue
+    clipped += length - 1
+  }
+  return Math.max(0, total - clipped)
+}
+
+/** chip 列表按 clipboard 偏移升序（官方已排序，此处防御性归一，丢弃非法项）。 */
+function chipsOf(snapshot: CursorSnapshot): Array<{ offset: number; length: number }> {
+  const occurrences = snapshot?.occurrences
+  if (!Array.isArray(occurrences) || !occurrences.length) return []
+  const out: Array<{ offset: number; length: number }> = []
+  for (const occurrence of occurrences) {
+    const offset = Number(occurrence?.offset ?? Number.NaN)
+    const length = Number(occurrence?.length ?? Number.NaN)
+    if (!Number.isFinite(offset) || !Number.isFinite(length) || length <= 1) continue
+    out.push({ offset: Math.max(0, offset), length })
+  }
+  return out.sort((a, b) => a.offset - b.offset)
+}
+
+/**
+ * detect 偏移 → clipboard 偏移（paddingAt 用：draft 是 clipboard 投影，不能直接按下标取字符）。
+ * 每个位于该偏移之前的 chip 在 clipboard 中多占 `length − 1`，累计补上即可。
+ * @author ddj 2026年09月11号
+ * @param snapshot 输入快照
+ * @param detectOffset detect 投影偏移
+ * @returns clipboard 投影偏移（已夹到 draft 范围内）
+ */
+export function detectToClipboardOf(snapshot: CursorSnapshot, detectOffset: number): number {
+  const total = String(snapshot?.draft ?? '').length
+  const target = Math.max(0, Math.min(Number(detectOffset) || 0, detectEndOf(snapshot)))
+  let shift = 0
+  for (const chip of chipsOf(snapshot)) {
+    const chipDetect = chip.offset - shift
+    if (chipDetect >= target) break
+    shift += chip.length - 1
+  }
+  return Math.max(0, Math.min(target + shift, total))
+}
+
+/**
+ * 插入点两侧是否需要补空格（仅纯文本通道需要；chip 由 facade 自行补尾随空格）。
+ *
+ * 在 detect 坐标的任意位置求值，故**末尾追加的行为与旧实现逐字符一致**
+ * （末尾前为非空白 → 前后各补一个空格；末尾前已是空白 → 只补尾随空格），
+ * 同时正确支持「插在文本中间」不再贴字。
+ * @author ddj 2026年09月11号
+ * @param snapshot 输入快照
+ * @param detectOffset detect 投影插入点
+ * @returns 是否需要前导/尾随空格
+ */
+export function paddingAt(snapshot: CursorSnapshot, detectOffset: number): { lead: boolean; tail: boolean } {
+  const draft = String(snapshot?.draft ?? '')
+  const at = detectToClipboardOf(snapshot, detectOffset)
+  const before = at > 0 ? draft.slice(at - 1, at) : ''
+  const after = at < draft.length ? draft.slice(at, at + 1) : ''
+  return {
+    lead: before !== '' && !/\s/.test(before),
+    // 末尾（after 为空）也补尾随空格：与旧「追加到末尾」行为一致
+    tail: after === '' || !/\s/.test(after),
+  }
+}
+
+/**
+ * 解析插入点（detect 坐标）：优先用输入框**当前光标/选区**（`caretSpan()`，
+ * 官方契约即 detect 坐标，无选区时回落文档末尾），并夹到 `[0, detectLength]`。
+ *
+ * 选区非塌缩时取 `end`（右边界）—— 插入而非替换，绝不删除用户已选中的内容。
+ * caret 缺失/非法（旧版 facade 无该方法、抛异常、NaN 等）一律回落到文档末尾。
+ * @author ddj 2026年09月11号
+ * @param caret caretSpan() 的返回值（可为 null/非法）
+ * @param detectLength detect 投影文档长度
+ * @returns detect 投影插入偏移
+ */
+export function insertOffsetOf(caret: unknown, detectLength: number): number {
+  const max = Math.max(0, Number(detectLength) || 0)
+  if (!caret || typeof caret !== 'object') return max
+  const span = caret as { start?: unknown; end?: unknown }
+  const raw = Number(span.end)
+  const value = Number.isFinite(raw) ? raw : Number(span.start)
+  if (!Number.isFinite(value)) return max
+  return Math.max(0, Math.min(value, max))
+}
+
+/**
+ * 生成 DSH @file 语法引用串：cwd 相对化、\ → /、含空白时按 @"path" 语法加引号。
+ * cwd 外/无法相对化的路径回退原路径。
+ * @author ddj 2026年08月25号
+ * @param path 打开的文件路径（相对 cwd 或绝对）
+ * @param cwd 会话工作区目录（可选）
+ * @returns 引用串（如 @src/index.ts 或 @"a b.ts"）
+ */
+export function mentionOf(path: string, cwd: string | undefined): string {
+  const raw = String(path)
+  let rel = raw
+  if (cwd) {
+    const base = String(cwd).replace(/[\\/]+$/, '')
+    const up = raw.replace(/\\/g, '/')
+    const baseUp = base.replace(/\\/g, '/')
+    if (up.startsWith(baseUp + '/')) rel = up.slice(baseUp.length + 1)
+    else if (up === baseUp) rel = ''
+  }
+  rel = rel.replace(/\\/g, '/').replace(/^\.\//, '')
+  if (!rel) rel = raw.replace(/\\/g, '/')
+  if (/[\u0000-\u001f\u007f-\u009f"]/u.test(rel)) return '@' + raw
+  return /\s/u.test(rel) ? `@"${rel}"` : `@${rel}`
+}
+
+/** 引用标签：文件名 + 可选行区间（chip 内展示，不带 @ 前缀）。
+ * @author ddj 2026年08月25号 */
+export function labelOf(path: string, range: RefRange | undefined): string {
+  const base = String(path).split(/[\\/]/).pop() || String(path)
+  if (!range || range.endLine < range.startLine) return base
+  return range.startLine === range.endLine
+    ? `${base} L${range.startLine}`
+    : `${base} L${range.startLine}-${range.endLine}`
+}
+
+/** 引用 ref：引用串 + 可选行区间（序列化直出，agent 据此读取对应片段）。
+ * @author ddj 2026年08月25号 */
+export function refOf(mention: string, range: RefRange | undefined): string {
+  if (!range || range.endLine < range.startLine) return mention
+  return range.startLine === range.endLine
+    ? `${mention} L${range.startLine}`
+    : `${mention} L${range.startLine}-${range.endLine}`
+}
+
+/** 构造 DSH 文件引用插入载荷（source=reference，发送序列化为 mention(+range) 文本）。
+ * @param path 目标路径（相对 cwd 或绝对）
+ * @param cwd 会话工作区目录（可选）
+ * @param range 行区间（可选）
+ * @param appearance 引用外观：'file'（默认）| 'folder'
+ */
+export function buildFileRef(
+  path: string,
+  cwd: string | undefined,
+  range?: RefRange,
+  appearance: RefAppearance = 'file',
+): { reference: ReferenceInsertLike; mention: string } {
+  const mention = mentionOf(path, cwd)
+  return {
+    mention,
+    reference: {
+      source: REF_SOURCE,
+      ref: refOf(mention, range),
+      label: labelOf(path, range),
+      appearance,
+      clipboardText: mention,
+    },
+  }
+}
+
+/** 输入门面最小形状（运行时来自 ctx.conversation.input，避免引入新类型依赖）。 */
+export interface InputLike {
+  state: { getSnapshot: () => CursorSnapshot }
+  /**
+   * 当前光标/选区（**detect 坐标**；无选区时回落为文档末尾的塌缩 span）。
+   * 官方 facade 契约：`caretSpan(): { start, end }`，与 insertReference 同一坐标系。
+   */
+  caretSpan?: () => { start?: number; end?: number } | null
+  insertReference: (ref: ReferenceInsertLike, span: TokenSpanLike) => boolean
+  /** 纯文本插入（官方 plain-text reference path；按 detect 坐标替换，不重建文档）。 */
+  insertText?: (text: string, span: TokenSpanLike, keepCompleting?: boolean) => boolean
+  setDraft: (text: string) => void
+}
+
+/** ReferenceInsert 结构形状（与 dsh-client-ui-input-trigger 类型一致）。 */
+export interface ReferenceInsertLike {
+  source: string
+  ref: string
+  label: string
+  appearance?: 'session' | 'file' | 'folder'
+  clipboardText: string
+}
+
+/** TokenSpan 结构形状（start/end 为草稿字符偏移，draftRev 为 CAS 版本）。 */
+export interface TokenSpanLike {
+  start: number
+  end: number
+  draftRev: number
+}
+
+/** ctx 依赖的最小面（sessions.scope + conversation.input）。 */
+export interface CtxLike {
+  get: (name: string) => unknown
+}
+
+/** 新建会话结果（ok=false 供调用方降级回当前对话注入）。 */
+export interface DraftSessionResult {
+  ok: boolean
+  /** 新会话 id（ok=true 时存在；投递命令按它内嵌）。 */
+  id?: string
+}
+
+/** apiproxy wire 端点（POST /api/<method>；浏览器同源 fetch 自带 cookie 鉴权；实证 401=未鉴权而非 404）。 */
+const SESSION_CREATE_PATH = '/api/session/create'
+/** apiproxy wire 端点：发送任务（session/prompt；点击即发送方案）。 */
+const SESSION_PROMPT_PATH = '/api/session/prompt'
+
+/** mint RPC 请求 id（RpcId 品牌类型运行时即普通字符串）。 */
+function mintRpcId(): string {
+  try {
+    return globalThis.crypto?.randomUUID?.() ?? ('rpc-' + Date.now())
+  } catch {
+    return 'rpc-' + Date.now()
+  }
+}
+
+/**
+ * wire 槽实参组装（gateway `invoke` 铁证：`request.args[parameter.wire]` 具名槽，
+ * `session/prompt` 的槽名 = "request"，值 = RpcRequest `{rpcId, payload}`）。
+ * @author ddj 2026年09月24号
+ * @param payload 业务载荷
+ * @returns 具名槽实参 `{ args: { request: RpcRequest } }`
+ */
+function slotArg(payload: object): { args: { request: { rpcId: string; payload: object } } } {
+  return { args: { request: { rpcId: mintRpcId(), payload } } }
+}
+
+/**
+ * RPC 返回解析（照官方 dsh-client-runtime 调用形态：`const { result } = await api.sessions.create(...)`）。
+ * 官方 api.sessions 面返回**信封** `{ rpcId, result: RpcResult }`——须解 .result；
+ * 兼容裸 RpcResult 形态（个别补丁面直接回 {ok, value}）。
+ * @author ddj 2026年09月23号
+ * @param res 信封或裸 RpcResult
+ * @returns 归一后的 { ok, value }
+ */
+function rpcOk(res: unknown): { ok: boolean; value?: unknown } {
+  const envelope = (res as { result?: unknown } | null)?.result
+  const r = (envelope ?? res) as { ok?: boolean; value?: unknown } | null
+  return { ok: r?.ok === true, value: r?.value }
+}
+
+/**
+ * wire 直调 session/create（主路径）：ClientRequest 信封 → ServerResponse.result（RpcResult 形态）。
+ * 契约以当前安装版 dsh-host-apiproxy 为准（api/sessions.d.ts「Method signatures are the
+ * source of truth」）：`create({cwd}) → {sessionId}`；信封 = `{type:'client-request', rpcId,
+ * method, payload}` → `{result: {ok:true, value:{sessionId}} | {ok:false, error}}`。
+ * @author ddj 2026年09月23号
+ * @param cwd 新会话工作区目录
+ * @returns 新会话 id（失败空串）
+ */
+async function apiSessionCreate(cwd: string | undefined): Promise<string> {
+  const res = await fetch(appUrl(SESSION_CREATE_PATH), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      type: 'client-request',
+      rpcId: mintRpcId(),
+      method: 'session/create',
+      payload: cwd ? { cwd } : {},
+    }),
+  })
+  const json = await res.json().catch(() => null) as { result?: { ok?: boolean; value?: { sessionId?: unknown } } } | null
+  const id = json?.result?.value?.sessionId
+  return json?.result?.ok === true && typeof id === 'string' ? id : ''
+}
+
+/**
+ * wire 直发 session/prompt（点击即发送方案）：任务文本投给目标会话 agent。
+ * 契约 = 当前安装树 SessionsApi.prompt：`{sessionId, mode:'queue', content:[{type:'text',text}]}`。
+ * 发送成功会话即有内容 → 不再被 blank 隐藏（列表可见）。
+ * @author ddj 2026年09月23号
+ * @param sessionId 目标会话 id（新会话）
+ * @param text 任务文本
+ * @returns 是否受理
+ */
+export async function apiSessionPrompt(sessionId: string, text: string): Promise<boolean> {
+  try {
+    const payload = { sessionId, mode: 'queue', content: [{ type: 'text', text }] }
+    const res = await fetch(appUrl(SESSION_PROMPT_PATH), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: mintRpcId(),
+        method: 'session/prompt',
+        payload: slotArg(payload),
+      }),
+    })
+    const json = await res.json().catch(() => null) as { result?: { ok?: boolean } } | null
+    return json?.result?.ok === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 新建独立会话承载旁路任务（02-deep-session-prompt：深度分析不污染当前对话）。
+ * 主路径 = apiproxy wire 直调（不依赖 service 面形态猜测）；回落 remote.session.create
+ * 与旧 sessions.create 两代 service 面（宽松解析）。任一步不符返回 ok:false，调用方降级。
+ * @author ddj 2026年09月23号
+ * @param ctx 客户端服务上下文（remote.session + sessions，仅回落用）
+ * @param cwd 新会话工作区目录（与当前会话同工作区）
+ * @returns 新会话结果（含 id）
+ */
+export async function newDraftSession(ctx: CtxLike, cwd: string | undefined): Promise<DraftSessionResult> {
+  // 主路径：client store manager 面（官方 connectWorkspace 同链路）——create 自带 store upsert，
+  // 「on resolution the child is in the list store and open() can target it」；
+  // wire 直调虽能建会话但 store 无感，故只作最后兜底。
+  try {
+    const sessions = ctx.get('sessions') as { create?: (opts?: { cwd?: string }) => unknown } | undefined
+    if (typeof sessions?.create === 'function') {
+      const created = await sessions.create(cwd ? { cwd } : undefined)
+      const id = typeof created === 'string' && created ? created
+        : typeof (created as { id?: unknown } | null)?.id === 'string' ? (created as { id: string }).id
+        : typeof (created as { sessionId?: unknown } | null)?.sessionId === 'string' ? (created as { sessionId: string }).sessionId
+        : typeof (created as { session?: { id?: unknown } } | null)?.session?.id === 'string'
+          ? (created as { session: { id: string } }).session.id
+          : ''
+      if (id) return { ok: true, id }
+    }
+  } catch { /* 回落下一通道 */ }
+  try {
+    // 回落 1：api.sessions service 面（返回信封 {rpcId, result}，见 rpcOk；多形态容错）
+    const remote = ctx.get('remote.session') as { create?: (req: unknown) => Promise<unknown> } | undefined
+    if (typeof remote?.create === 'function') {
+      const payload = cwd ? { cwd } : {}
+      for (const arg of [slotArg(payload), { request: { rpcId: mintRpcId(), payload } }, { rpcId: mintRpcId(), payload }, payload]) {
+        try {
+          const r = rpcOk(await remote.create(arg))
+          const id = r.value as { sessionId?: unknown } | undefined
+          if (r.ok && typeof id?.sessionId === 'string') return { ok: true, id: id.sessionId }
+        } catch { /* 单形态失败试下一形态 */ }
+      }
+    }
+  } catch { /* 回落 wire */ }
+  // 回落 2：wire 直调（创建成功但 store 无感，open 切换不保证；任务发送仍可用）
+  try {
+    const id = await apiSessionCreate(cwd)
+    if (id) return { ok: true, id }
+  } catch { /* 全部失败：调用方降级 */ }
+  return { ok: false }
+}
+
+/** 注入器产物：给 EditorView 用的动作集合。 */
+export interface AddToConversation {
+  /** 追加文件/文件夹引用 chip（@path [Lstart-end]）；忙态自动降级纯文本。 */
+  appendReference(
+    sessionId: string | undefined,
+    path: string,
+    range?: RefRange,
+    appearance?: RefAppearance,
+  ): Promise<AddOutcome>
+  /** 追加纯文本（AI 深度分析任务等长文本注入；插到当前光标，失败不整篇重建）。 */
+  appendText(sessionId: string | undefined, text: string): Promise<AddOutcome>
+  /** 新建独立会话并切换（旁路任务隔离；失败 ok:false 供降级回当前对话）。 */
+  startDraftSession(cwd?: string): Promise<DraftSessionResult>
+  /** 发送任务给目标会话 agent（点击即发送；失败 false 供降级）。 */
+  sendTask(sessionId: string | undefined, text: string): Promise<boolean>
+}
+
+/**
+ * 解析会话输入门面；缺失时返回 undefined（动作侧守卫降级）。
+ * @author ddj 2026年08月25号
+ * @param ctx 客户端服务上下文
+ * @param sessionId 会话 id
+ * @returns SessionInput 或 undefined
+ */
+export function inputFor(ctx: CtxLike, sessionId: string | undefined): InputLike | undefined {
+  if (!sessionId) return undefined
+  try {
+    const sessions = ctx.get('sessions') as { scope?: (id: string) => unknown } | undefined
+    const conversation = ctx.get('conversation') as { input?: { for: (actx: unknown) => unknown } } | undefined
+    const actx = sessions?.scope?.(sessionId)
+    const shell = actx && conversation?.input?.for?.(actx)
+    // 探针须是我们的**实际依赖**（insertReference），而不是会被整篇重建的 setDraft
+    return (shell && typeof (shell as InputLike).insertReference === 'function') ? shell as InputLike : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 取当前草稿快照（长度/版本/chip 列表）；无输入门面时返回 null。
+ * @author ddj 2026年08月25号 / 2026年09月11号 */
+function draftCursor(input: InputLike | undefined): CursorSnapshot | null {
+  try {
+    const s = input?.state?.getSnapshot?.()
+    if (!s) return null
+    return {
+      draft: String(s.draft ?? ''),
+      draftRev: Number(s.draftRev ?? 0),
+      occurrences: Array.isArray(s.occurrences) ? s.occurrences : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** 从 sessions 列表快照读会话工作区目录（与 index.ts 既有读取方式一致）。
+ * @author ddj 2026年08月25号 */
+function cwdOf(ctx: CtxLike, sessionId: string | undefined): string | undefined {
+  if (!sessionId) return undefined
+  try {
+    const sessions = ctx.get('sessions') as
+      | { list?: { getSnapshot?: () => { byId?: Record<string, { cwd?: string }> } } }
+      | undefined
+    return sessions?.list?.getSnapshot?.()?.byId?.[sessionId]?.cwd
+  } catch {
+    return undefined
+  }
+}
+
+/** 输入门面插入引用（拦截异常视作未应用，走降级）。
+ * @author ddj 2026年08月25号 */
+function safeInsert(input: InputLike, reference: ReferenceInsertLike, span: TokenSpanLike): boolean {
+  try {
+    return input.insertReference(reference, span) === true
+  } catch {
+    return false
+  }
+}
+
+/** 输入门面插入纯文本（官方 plain-text 通道；不存在或异常视作未应用）。
+ * @author ddj 2026年09月11号 */
+function safeInsertText(input: InputLike, text: string, span: TokenSpanLike): boolean {
+  if (typeof input.insertText !== 'function') return false
+  try {
+    return input.insertText(text, span) === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 读输入框当前光标（detect 坐标）；门面缺失/异常返回 null（由调用方回落到文档末尾）。
+ * @author ddj 2026年09月11号
+ * @param input 输入门面
+ * @returns caretSpan 结果或 null
+ */
+function caretOf(input: InputLike): { start?: number; end?: number } | null {
+  if (typeof input.caretSpan !== 'function') return null
+  try {
+    return input.caretSpan() ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 创建「添加到对话」动作集（apply 阶段构建一次，随 props 传给 EditorView）。
+ *
+ * 插入位置 = 输入框**当前光标**（`caretSpan()`，detect 坐标；无光标提示时回落文档末尾），
+ * 不再固定追加到最末尾。坐标一律用 **detect 投影**（见 detectEndOf 的缺陷说明）；
+ * 两条写入通道都失败时**不写任何内容**并返回 'failed' —— 旧实现在此处退回 `setDraft`
+ * 整篇重建，会把既有 chip 全部销毁（连续添加多个引用即触发）。
+ * @author ddj 2026年08月25号 / 2026年09月11号
+ * @param ctx 客户端服务上下文（sessions + conversation）
+ * @returns 动作集
+ */
+export function createAddToConversation(ctx: CtxLike): AddToConversation {
+  const appendReference: AddToConversation['appendReference'] = async (sessionId, path, range, appearance) => {
+    const input = inputFor(ctx, sessionId)
+    if (!input) return 'unavailable'
+    const cur = draftCursor(input)
+    if (!cur) return 'unavailable'
+    const { reference, mention } = buildFileRef(path, cwdOf(ctx, sessionId), range, appearance)
+    // 光标位置（detect 坐标）；caretSpan 不可用时 = 文档末尾（旧行为）
+    const at = insertOffsetOf(caretOf(input), detectEndOf(cur))
+    const span: TokenSpanLike = { start: at, end: at, draftRev: cur.draftRev }
+    if (safeInsert(input, reference, span)) return 'ok'
+    // chip 通道被拒（忙态/坐标 CAS 过期）：改用纯文本通道就地替换，**保留既有 chip**。
+    const pad = paddingAt(cur, at)
+    const text = (pad.lead ? ' ' : '') + mention + (pad.tail ? ' ' : '')
+    if (safeInsertText(input, text, span)) return 'busy'
+    // 两条通道都不可用：宁可不写，也不整篇重建（那会销毁用户已插入的引用）
+    return 'failed'
+  }
+
+  /**
+   * 追加纯文本（AI 深度分析任务注入）：走官方 plain-text 通道插到当前光标。
+   * 失败语义与 appendReference 一致：宁可不写也不整篇重建（保护既有 chip）。
+   * @author ddj 2026年09月23号
+   * @param sessionId 会话 id
+   * @param text 待注入文本
+   * @returns 注入结果（ok / unavailable / failed）
+   */
+  const appendText: AddToConversation['appendText'] = async (sessionId, text) => {
+    const input = inputFor(ctx, sessionId)
+    if (!input) return 'unavailable'
+    const cur = draftCursor(input)
+    if (!cur) return 'unavailable'
+    const at = insertOffsetOf(caretOf(input), detectEndOf(cur))
+    const span: TokenSpanLike = { start: at, end: at, draftRev: cur.draftRev }
+    return safeInsertText(input, text, span) ? 'ok' : 'failed'
+  }
+
+  /**
+   * 新建独立会话（02-deep-session-prompt：旁路任务不污染当前对话）。
+   * 闭包持有真服务 ctx（面板 SidebarCtx 无 .get，会话操作必须经此门面）；
+   * 创建后尽力 `sessions.open(id)` 切换视图（缺失不致命，草稿仍可写入）。
+   * @author ddj 2026年09月23号
+   * @param cwd 新会话工作区目录（与当前会话同工作区）
+   * @returns 新会话结果（失败供降级）
+   */
+  const startDraftSession: AddToConversation['startDraftSession'] = async (cwd) => {
+    const result = await newDraftSession(ctx, cwd)
+    if (result.ok && result.id) {
+      try {
+        // 主动铸造 scope（scope 对新会话惰性铸造，inputFor/composer 面依赖它）
+        const sessions = ctx.get('sessions') as {
+          materializeScope?: (id: string) => unknown
+          manager?: { select?: (id: string) => void; rename?: (id: string, title: string) => void }
+          open?: (id: string) => void
+        } | undefined
+        sessions?.materializeScope?.(result.id)
+        // 命名醒目标题（manager.rename 在面实证）：会话列表一眼可见、点击即入
+        const title = 'AI 深度分析 · ' + (String(cwd ?? '').split(/[\\/]/).pop() || 'SVN 变更')
+        void sessions?.manager?.rename?.(result.id, title)
+        // 切换尝试（open/select 未对插件暴露时静默跳过：rename 已保证可见性）
+        void sessions?.manager?.select?.(result.id)
+        void sessions?.open?.(result.id)
+      } catch { /* 面能力缺失不致命：任务发送不受影响 */ }
+    }
+    return result
+  }
+
+  /**
+   * 发送任务给目标会话 agent（点击即发送方案：任务落地会话即非 blank，列表可见）。
+   * 主路径 wire 直发 session/prompt；回落 remote.session.prompt service 面。
+   * @author ddj 2026年09月23号
+   * @param sessionId 目标会话 id
+   * @param text 任务文本
+   * @returns 是否受理
+   */
+  const sendTask: AddToConversation['sendTask'] = async (sessionId, text) => {
+    if (!sessionId) return false
+    // 主路径：**官方 composer 发送链路**（InputLike setDraft + submit —— UI「发送」的内部路径）。
+    // inputFor 依赖 sessions.scope(id)：新会话铸造有时延，重试 3 次后再降级。
+    const composerOnce = async (): Promise<boolean> => {
+      const input = inputFor(ctx, sessionId) as { setDraft?: (t: string) => void; submit?: (mode?: unknown) => void } | undefined
+      if (input && typeof input.setDraft === 'function' && typeof input.submit === 'function') {
+        input.setDraft(text)
+        input.submit()
+        return true
+      }
+      return false
+    }
+    try {
+      for (let attempt = 3; attempt > 0; attempt--) {
+        if (await composerOnce()) return true
+        if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, 500))
+      }
+    } catch { /* 降级下一通道 */ }
+    // 兜底 1：remote.session service 面（多形态容错）
+    try {
+      const remote = ctx.get('remote.session') as { prompt?: (req: unknown) => Promise<unknown> } | undefined
+      if (typeof remote?.prompt === 'function') {
+        const payload = { sessionId, mode: 'queue', content: [{ type: 'text', text }] }
+        for (const arg of [slotArg(payload), { request: { rpcId: mintRpcId(), payload } }, { rpcId: mintRpcId(), payload }, payload]) {
+          try {
+            if (rpcOk(await remote.prompt(arg)).ok) return true
+          } catch { /* 单形态失败试下一形态 */ }
+        }
+      }
+    } catch { /* 降级下一通道 */ }
+    // 兜底 2：HTTP wire
+    try {
+      return await apiSessionPrompt(sessionId, text)
+    } catch { /* 全失败 */ }
+    return false
+  }
+
+  return { appendReference, appendText, startDraftSession, sendTask }
+}

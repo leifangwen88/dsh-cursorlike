@@ -1,0 +1,97 @@
+/**
+ * dsh-vscode-mode client — 跨组件/跨 slot 的窗口事件助手。
+ * 迁移自原 src/client/index.ts 的 openEditorView 与事件派发，语义不改；
+ * 侧边栏形态（sidebarBridge 已注册路由）优先，否则回退 DOM 页签点击。
+ * 作者 ddj 2026-08-20
+ */
+import { routeSideEditor } from './sidebarBridge.js'
+
+/**
+ * 选择中央「文件编辑」页签（DOM 级，无需 store actions）。仅旧页签形态使用。
+ * @author ddj 2026年08月26号
+ */
+function selectEditorTab(): void {
+  const tabs = Array.from(document.querySelectorAll('div[role="tablist"] button[role="tab"]'))
+  for (const tab of tabs) {
+    if (tab.textContent && tab.textContent.includes('文件编辑')) {
+      (tab as HTMLButtonElement).click()
+      break
+    }
+  }
+}
+
+/**
+ * 打开「文件编辑」：侧边栏形态路由优先，旧形态回退中央页签。
+ * @author ddj 2026年08月26号
+ * @param path 要打开的路径（可空）
+ */
+export function openEditorView(path: string | null): void {
+  if (routeSideEditor(path ?? null, false)) return
+  selectEditorTab()
+  const target = path ?? null
+  setTimeout(() => {
+    window.dispatchEvent(new CustomEvent('edrv:open-editor', { detail: { path: target } }))
+  }, 80)
+}
+
+/**
+ * 打开文件编辑页并聚焦指定文件的首个差异（侧边栏形态自动展开面板）。
+ * @author ddj 2026年08月26号
+ * @param path 待聚焦的差异文件路径
+ */
+export function openDiffView(path: string): void {
+  if (routeSideEditor(path, true)) return
+  selectEditorTab()
+  setTimeout(() => {
+    window.dispatchEvent(new CustomEvent('edrv:open-editor', {
+      detail: { path, focusDiff: true },
+    }))
+  }, 80)
+}
+
+export interface RefreshNotice { scope?: string; paths?: string[]; eventId?: string; kind?: 'text' | 'structure' | 'svn' | 'unknown' }
+let refreshSeq = 0
+/** @public @author ddj 2026年10月10号 @param notice Scope/path/id; absent detail means legacy unknown/full. @returns Shared id for multi-channel deduplication. */
+export function emitRefresh(notice: RefreshNotice = {}): string {
+  const eventId = notice.eventId ?? 'change-' + Date.now() + '-' + (++refreshSeq)
+  window.dispatchEvent(new CustomEvent('edrv:refresh', { detail: { ...notice, eventId } }))
+  return eventId
+}
+
+/**
+ * 磁盘文件变化（外部写入/删除）：文件树按路径失效对应目录并强制重列。
+ * 与 edrv:refresh 分开：这里不触发差异记录重算与 stale 清理，只动目录缓存。
+ * @author ddj 2026年09月15号
+ * @param path 发生变化的文件路径
+ */
+export function emitFileChanged(path: string, notice: RefreshNotice = {}): string | undefined {
+  if (!path) return
+  const eventId = notice.eventId ?? 'change-' + Date.now() + '-' + (++refreshSeq)
+  window.dispatchEvent(new CustomEvent('edrv:file-changed', { detail: { ...notice, path, paths: notice.paths ?? [path], eventId } }))
+  return eventId
+}
+
+/** 打开指定路径到编辑区页签。 */
+export function emitOpenEditor(path: string): void {
+  window.dispatchEvent(new CustomEvent('edrv:open-editor', { detail: { path } }))
+}
+
+/**
+ * 打开指定路径并定位到行列（LSP 跳转目标）。
+ * @author ddj 2026年08月27号
+ * @param path 目标路径
+ * @param line 目标行（1-based，可空）
+ * @param column 目标列（1-based，可空）
+ */
+export function emitOpenAt(path: string, line?: number, column?: number): void {
+  window.dispatchEvent(new CustomEvent('edrv:open-editor', { detail: { path, line, column } }))
+}
+
+/**
+ * 拉起 DiffLauncher。
+ * @author ddj 2026年08月26号
+ * @param tab 可选的目标页签
+ */
+export function emitShowLauncher(tab?: 'pending' | 'archive'): void {
+  window.dispatchEvent(new CustomEvent('edrv:show-launcher', { detail: { tab } }))
+}
