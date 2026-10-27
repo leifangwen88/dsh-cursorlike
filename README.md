@@ -19,16 +19,10 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 ## 截图
 
 <p align="center">
-  <img src="assets/screenshots/cursorlike-workspace.png" alt="CursorLike 右侧栏编辑器、文件树与待审文件卡" width="860">
+  <img src="assets/screenshots/cursorlike-overview.png" alt="CursorLike：对话 + 右侧栏编辑器 / 文件树 / 待审文件卡与差异审查" width="1000">
 </p>
 
-<p align="center"><em>右侧栏编辑器 + 文件树 + 差异审查 / 待审文件卡（截图为本仓库 README 的编辑过程）</em></p>
-
-<p align="center">
-  <img src="assets/screenshots/cursorlike-settings.png" alt="CursorLike 设置页" width="620">
-</p>
-
-<p align="center"><em>设置页：编辑器 / AI 补全 / 语言服务器 / 性能优化 / 兼容性</em></p>
+<p align="center"><em>对话 + 官方右侧栏编辑器（文件树 / 页签 / Monaco）+ 待审文件卡与差异审查</em></p>
 
 ## 特性
 
