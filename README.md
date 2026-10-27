@@ -96,14 +96,14 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 2. 粘贴 Release 资产 URL：
 
    ```text
-   https://github.com/<owner>/dsh-cursorlike/releases/download/v<version>/dsh-cursorlike-<version>.tgz
+   https://github.com/leifangwen88/dsh-cursorlike/releases/download/v<version>/dsh-cursorlike-<version>.tgz
    ```
 
 3. 安装完成后重启 DSH（Host 半不热载）。
 
 **B. 从 GitHub 仓库安装（开发者）**
 
-安装 spec 填 `https://github.com/<owner>/dsh-cursorlike`（或 `github:<owner>/dsh-cursorlike`）。会拉取源码并执行 `prepare` 构建，首次较慢，且可能需要批准依赖构建脚本。
+安装 spec 填 `https://github.com/leifangwen88/dsh-cursorlike`（或 `github:leifangwen88/dsh-cursorlike`）。会拉取源码并执行 `prepare` 构建，首次较慢，且可能需要批准依赖构建脚本。
 
 **C. 命令行（仅非 desktop profile）**
 

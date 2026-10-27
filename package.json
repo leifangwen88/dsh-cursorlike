@@ -19,6 +19,14 @@
     "diff-viewer",
     "files"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leifangwen88/dsh-cursorlike.git"
+  },
+  "homepage": "https://github.com/leifangwen88/dsh-cursorlike",
+  "bugs": {
+    "url": "https://github.com/leifangwen88/dsh-cursorlike/issues"
+  },
   "type": "module",
   "engines": {
     "node": "^22.19.0 || >=24.0.0",

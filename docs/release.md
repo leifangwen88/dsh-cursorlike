@@ -14,7 +14,7 @@
 
 - [ ] 版本号：`package.json` 的 `version`。tag 必须与之一致（Release 工作流第一步校验 `v<version>`）。
 - [ ] 首个公开发行版已是 `0.1.0`；后续发版先改版本再打 tag。
-- [ ] README 安装段把 `<owner>/dsh-cursorlike` 换成真实地址。
+- [ ] README 安装段把 `leifangwen88/dsh-cursorlike` 换成真实地址。
 - [ ] 三门本地全绿：
   ```bash
   pnpm typecheck
@@ -32,7 +32,7 @@
 git init -b main
 git add -A
 git commit -m "release: v0.1.0 CursorLike"
-git remote add origin https://github.com/<owner>/dsh-cursorlike.git
+git remote add origin https://github.com/leifangwen88/dsh-cursorlike.git
 git push -u origin main
 ```
 
@@ -63,7 +63,7 @@ tag/版本一致校验 → install → typecheck → test → build → `npm pac
 发布资产 URL 形如：
 
 ```text
-https://github.com/<owner>/dsh-cursorlike/releases/download/v<version>/dsh-cursorlike-<version>.tgz
+https://github.com/leifangwen88/dsh-cursorlike/releases/download/v<version>/dsh-cursorlike-<version>.tgz
 ```
 
 记录：tag 指向的 commit、workflow run id、Release 资产名。
@@ -80,7 +80,7 @@ https://github.com/<owner>/dsh-cursorlike/releases/download/v<version>/dsh-curso
 
 ### B. 从 GitHub 仓库安装（开发者 / 尝鲜）
 
-spec 填 `https://github.com/<owner>/dsh-cursorlike`（或 `github:<owner>/dsh-cursorlike`）：
+spec 填 `https://github.com/leifangwen88/dsh-cursorlike`（或 `github:leifangwen88/dsh-cursorlike`）：
 
 - 会 clone 源码并运行 `prepare`（prebuild + build），首次安装较慢；
 - 可能触发依赖构建批准；
@@ -90,7 +90,7 @@ spec 填 `https://github.com/<owner>/dsh-cursorlike`（或 `github:<owner>/dsh-c
 
 ```bash
 dsh plugin --profile <profile-name> add <tarball-url>
-dsh plugin --profile <profile-name> add github:<owner>/dsh-cursorlike
+dsh plugin --profile <profile-name> add github:leifangwen88/dsh-cursorlike
 ```
 
 `dsh plugin` 只是把参数转发给 profile 目录里的 pnpm，**不会自动选中组合包**；是否启用请以插件页/`plugin_manager` 为准。desktop profile 被 CLI 拒绝（由 Electron 应用独占管理），桌面用户走 A。

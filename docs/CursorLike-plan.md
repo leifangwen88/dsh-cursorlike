@@ -388,7 +388,7 @@ src/host/
 **CursorLike**  
 - 包名 / npm 名：`dsh-cursorlike`（小写；同时作为 GitHub 仓库名，符合 DSH 插件生态 `dsh-*` 命名习惯）
 - 显示名：`CursorLike`
-- 仓库：`<GitHub 用户名>/dsh-cursorlike`（发布时创建；`package.json` 的 `repository` / `homepage` / `bugs` 待仓库建立后填本仓库地址）
+- 仓库：`leifangwen88/dsh-cursorlike`（GitHub 公开仓库，发布时创建；`package.json` 的 `repository` / `homepage` / `bugs` 已指向本仓库）
 - Tagline：**The Cursor-style coding surface for DeepSeek Harness.**
 - 中文：**给 DeepSeek Harness 的 Cursor 式编码工作台。**
 
