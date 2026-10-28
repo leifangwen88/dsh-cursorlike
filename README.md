@@ -11,7 +11,7 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 保留上游的编辑器、文件树、差异审查与 AI 基础，围绕 Cursor 的核心动线重构了「会话级文件浏览卡」，
 并把不进入主路径的重功能逐步做减法。
 
-- 当前版本：`0.1.0`（已发布到 npm 与 GitHub Releases）
+- 当前版本：`0.1.1`（已发布到 npm 与 GitHub Releases）
 - 安装：`dsh plugin add dsh-cursorlike`
 - 目标 DSH：`0.2.1-rc.x`（`engines.dsh: >=0.1.0-rc.1 <0.3.0-0`，cordis `>=4.0.0-rc <5`）
 - 许可证：MIT（保留上游版权与许可声明）
