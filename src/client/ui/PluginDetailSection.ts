@@ -9,7 +9,13 @@ import React from 'react'
 import { rpc } from '../rpc.js'
 
 /** 本插件标识（与 package.json name / bundle 行 id 一致）。 */
-export const SELF_ID = 'dsh-vscode-mode'
+export const SELF_ID = 'dsh-cursorlike'
+
+/** 项目公开地址（详情页给用户可点击的 GitHub / npm 入口）。 */
+export const REPO_URL = 'https://github.com/leifangwen88/dsh-cursorlike'
+export const RELEASES_URL = REPO_URL + '/releases'
+export const ISSUES_URL = REPO_URL + '/issues'
+export const NPM_URL = 'https://www.npmjs.com/package/dsh-cursorlike'
 
 /**
  * 判断详情页 subject 是否指向本插件。
@@ -64,15 +70,22 @@ export function PluginDetailSection(props) {
     React.createElement('span', { className: 'vsm-compat-name' }, name),
     React.createElement('span', { className: 'vsm-compat-note' }, note),
   )
+  const linkRow = (name, href, label) => row(name, React.createElement('a', {
+    href, target: '_blank', rel: 'noopener noreferrer', className: 'vsm-compat-link',
+  }, label))
 
   const versionText = report?.dshVersion ? 'DSH ' + report.dshVersion : '未探测到 DSH 版本'
   const pluginText = report?.pluginVersion ? '插件 ' + report.pluginVersion : '插件版本未上报'
   const warnCount = Array.isArray(report?.warnings) ? report.warnings.length : 0
 
   return React.createElement('section', { className: 'vsm-panel', 'data-edrv-plugin-status': '1' },
-    React.createElement('h3', { className: 'vsm-panel-title' }, 'CursorLike 运行状态'),
+    React.createElement('h3', { className: 'vsm-panel-title' }, 'CursorLike 插件信息'),
     React.createElement('div', { className: 'vsm-panel-body' },
       row('版本', versionText + ' · ' + pluginText),
+      linkRow('开源仓库', REPO_URL, 'GitHub ↗'),
+      linkRow('发布与安装', RELEASES_URL, 'GitHub Releases ↗'),
+      linkRow('npm 包', NPM_URL, 'dsh-cursorlike ↗'),
+      linkRow('问题反馈', ISSUES_URL, 'Issues ↗'),
       row('版本适配', countText(report?.adapters)),
       row('外部插件与服务', countText(report?.external)),
       row('护栏', countText(report?.guards)),

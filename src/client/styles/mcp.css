@@ -121,6 +121,9 @@
 .vsm-compat-item.warn .vsm-compat-name::before{content:"● ";color:var(--dsw-alias-state-warn-primary,#e5b93f)}
 .vsm-compat-name{font-weight:500;min-width:0}
 .vsm-compat-note{color:var(--dsw-alias-label-tertiary,#9aa5b1);font-size:12px;text-align:right;min-width:0}
+.vsm-compat-link{color:var(--dsw-alias-link,#4f8cff);text-decoration:none;white-space:nowrap}
+.vsm-compat-link:hover{text-decoration:underline}
+.vsm-compat-link:focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
 
 /* 开发形态开关 */
 .vsm-devform-note{display:block;margin-top:4px;font-size:11px;color:var(--dsw-alias-label-tertiary,#9aa5b1);word-break:break-all}

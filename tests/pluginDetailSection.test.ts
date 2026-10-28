@@ -4,7 +4,23 @@
  * @author ddj 2026年10月19号
  */
 import { describe, expect, it } from 'vitest'
-import { SELF_ID, isSelfSubject } from '../src/client/ui/PluginDetailSection.js'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { NPM_URL, REPO_URL, SELF_ID, isSelfSubject } from '../src/client/ui/PluginDetailSection.js'
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { name: string }
+
+describe('详情页元数据', () => {
+  it('SELF_ID 跟随包名（改名后自定义详情段仍能命中）', () => {
+    expect(SELF_ID).toBe(pkg.name)
+  })
+  it('详情页公开链接指向本项目', () => {
+    expect(REPO_URL).toBe('https://github.com/leifangwen88/dsh-cursorlike')
+    expect(NPM_URL).toBe('https://www.npmjs.com/package/dsh-cursorlike')
+  })
+})
 
 describe('isSelfSubject', () => {
   it('内置项形状命中本插件 id', () => {
