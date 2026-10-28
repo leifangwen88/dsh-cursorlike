@@ -15,7 +15,7 @@ export function reviewDb(cwd: string): DatabaseSync {
   if (!activeReady(cwd)) throw new Error('官方审查要求先完成活跃库迁移')
   const db = dbFor(cwd)
   const version = db.prepare("SELECT value FROM metadata WHERE name='schema'").get() as Row
-  if (version.value === '4') { migrateBlocks(cwd, db); return db }
+  if (version.value === '4') { migrateBlocks(cwd, db); ensureSessionIndexes(db); return db }
   db.exec('BEGIN IMMEDIATE')
   try {
     db.exec(`CREATE TABLE review_snapshots (
@@ -42,7 +42,31 @@ export function reviewDb(cwd: string): DatabaseSync {
     throw error
   }
   migrateBlocks(cwd, db)
+  ensureSessionIndexes(db)
   return db
+}
+
+/**
+ * 一次性补齐按会话查询的复合索引。
+ *
+ * 文件卡/审查页默认按 session 过滤（session_id + current + decision + identity），
+ * 旧的 review_pending(current,decision,id) 只能先扫全工作区 pending 再过滤；
+ * 历史/文件很长的会话每 5s 轮询会放大到全表。索引随 schema 一次性迁移，幂等。
+ * @author ddj 2026年10月28号
+ * @param db 已迁移的 schema4 连接
+ */
+function ensureSessionIndexes(db: DatabaseSync): void {
+  if (db.prepare("SELECT value FROM metadata WHERE name='review_session_index'").get()) return
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS review_session_pending ON review_files(session_id,current,decision,identity);
+      CREATE INDEX IF NOT EXISTS review_session_identity ON review_files(session_id,identity);
+      INSERT INTO metadata(name,value) VALUES('review_session_index','1');`)
+    db.exec('COMMIT')
+  } catch (error) {
+    if (db.isTransaction) db.exec('ROLLBACK')
+    throw error
+  }
 }
 
 /** @private @author ddj 2026年10月27号 @param cwd Workspace backup identity. @param db Open schema4 database. Extends the official-review sub-schema without changing legacy archive schema. @throws Migration failure, leaving prior decisions intact. */

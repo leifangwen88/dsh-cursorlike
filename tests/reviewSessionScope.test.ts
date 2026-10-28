@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { closeArchiveDbs, migrateActive } from '../src/archiveDb.js'
-import { hasOfficial, reviewDetail, reviewPage, saveSnapshot } from '../src/reviewDb.js'
+import { hasOfficial, reviewDb, reviewDetail, reviewPage, saveSnapshot } from '../src/reviewDb.js'
 import type { ReviewSnapshot } from '../src/shared/review.js'
 
 const cwd = '/cursorlike-session-scope'
@@ -46,6 +46,17 @@ afterAll(() => {
 })
 
 describe('官方 review DB 的会话隔离', () => {
+  it('按会话查询有复合索引（避免每 5s 轮询退化成全工作区扫描）', () => {
+    const db = reviewDb(cwd)
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='review_files'")
+      .all().map((row) => String((row as { name: unknown }).name))
+    expect(indexes).toContain('review_session_pending')
+    expect(indexes).toContain('review_session_identity')
+    const plan = JSON.stringify(db.prepare(`EXPLAIN QUERY PLAN SELECT id FROM review_files
+      WHERE session_id=? AND current=1 AND decision='pending'`).all('session-a'))
+    expect(plan).toContain('review_session_pending')
+  })
+
   it('不传 sessionId 时保留工作区聚合视图（历史/兼容）', () => {
     const page = reviewPage(cwd)
     expect(page.pending).toBe(3)
