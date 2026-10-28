@@ -176,25 +176,35 @@ function itemOf(row: Row): ReviewItem {
     ...summary, currentPath: String(row.identity), kind: kind as ReviewItem['kind'], decision: row.decision as ReviewItem['decision'], revision: Number(row.revision), current: row.current === 1 }
 }
 
-/** @public @author ddj 2026年10月26号 @param cwd Workspace. @param cursor Page offset. @param history Include withdrawn/decided history. @returns Bounded metadata page; pending across all source sessions/turns. */
-export function reviewPage(cwd: string, cursor = 0, history = false, path?: string): ReviewPage {
+/** @public @author ddj 2026年10月26号 @param cwd Workspace. @param cursor Page offset. @param history Include withdrawn/decided history. @param path Optional file identity. @param sessionId Optional live session scope; omitted keeps the workspace-wide historical view. @returns Bounded metadata page for one session (or all sessions when omitted). */
+export function reviewPage(cwd: string, cursor = 0, history = false, path?: string, sessionId?: string): ReviewPage {
   const db = reviewDb(cwd)
   const offset = Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0
+  const sid = typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined
   const conditions = history ? [] : ["current=1 AND decision='pending'"]
   if (path !== undefined) conditions.push('identity=?')
+  if (sid !== undefined) conditions.push('session_id=?')
   const clause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
-  const parameters = path === undefined ? [offset] : [path, offset]
+  const parameters: (string | number)[] = []
+  if (path !== undefined) parameters.push(path)
+  if (sid !== undefined) parameters.push(sid)
+  parameters.push(offset)
   const rows = db.prepare(`SELECT id,session_id,turn,seq,identity,summary,decision,revision,current,
     json_extract(diff,'$.kind') AS kind FROM review_files ${clause} ORDER BY rowid DESC LIMIT 51 OFFSET ?`).all(...parameters) as Row[]
-  const count = db.prepare("SELECT COUNT(*) AS n FROM review_files WHERE current=1 AND decision='pending'").get() as Row
-  const gaps = db.prepare("SELECT * FROM review_capture WHERE state<>'complete' ORDER BY seq DESC LIMIT 50").all() as Row[]
+  const count = db.prepare(`SELECT COUNT(*) AS n FROM review_files WHERE current=1 AND decision='pending'
+    ${sid !== undefined ? 'AND session_id=?' : ''}`).get(...(sid !== undefined ? [sid] : [])) as Row
+  const gaps = db.prepare(`SELECT * FROM review_capture WHERE state<>'complete'
+    ${sid !== undefined ? 'AND session_id=?' : ''} ORDER BY seq DESC LIMIT 50`).all(...(sid !== undefined ? [sid] : [])) as Row[]
   const capped = db.prepare(`SELECT session_id,turn,seq,json_extract(payload,'$.summary.total') AS total,
     json_array_length(payload,'$.summary.files') AS listed FROM review_snapshots WHERE current=1
-    AND json_extract(payload,'$.summary.total')>json_array_length(payload,'$.summary.files') LIMIT 50`).all() as Row[]
+    ${sid !== undefined ? 'AND session_id=?' : ''}
+    AND json_extract(payload,'$.summary.total')>json_array_length(payload,'$.summary.files') LIMIT 50`).all(...(sid !== undefined ? [sid] : [])) as Row[]
   // Navigation is metadata-only and independent of the 50-row patch-history page.
   const files = db.prepare(`SELECT identity,MIN(json_extract(summary,'$.display')) AS label,COUNT(*) AS n
-    FROM review_files WHERE current=1 AND decision='pending' GROUP BY identity ORDER BY identity`).all() as Row[]
-  const covered = db.prepare('SELECT DISTINCT identity FROM review_files').all() as Row[]
+    FROM review_files WHERE current=1 AND decision='pending'
+    ${sid !== undefined ? 'AND session_id=?' : ''} GROUP BY identity ORDER BY identity`).all(...(sid !== undefined ? [sid] : [])) as Row[]
+  const covered = db.prepare(`SELECT DISTINCT identity FROM review_files
+    ${sid !== undefined ? 'WHERE session_id=?' : ''}`).all(...(sid !== undefined ? [sid] : [])) as Row[]
   return { overview: { files: files.map((row) => ({ sourceKind: 'official', path: String(row.identity), label: String(row.label), pending: Number(row.n) })),
     coveredPaths: covered.map((row) => String(row.identity)) },
     items: rows.slice(0, 50).map(itemOf), pending: Number(count.n), nextCursor: rows.length > 50 ? offset + 50 : null,
@@ -205,24 +215,29 @@ export function reviewPage(cwd: string, cursor = 0, history = false, path?: stri
 
 }
 
-/** @public @author ddj 2026年10月26号 @param cwd Migrated workspace. @param path Legacy write target. @returns Whether any official version owns the file, including decided history. */
-export function hasOfficial(cwd: string, path: string): boolean {
+/** @public @author ddj 2026年10月26号 @param cwd Migrated workspace. @param path Legacy write target. @param sessionId Optional live session scope; omitted keeps the workspace-wide guard. @returns Whether the session (or any session when omitted) owns an official version of the file. */
+export function hasOfficial(cwd: string, path: string, sessionId?: string): boolean {
   const db = dbFor(cwd)
   // A read guard must not acquire a migration write lock on legacy-only databases.
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE name='review_files' AND type='table'").get()) return false
+  const sid = typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined
+  const scope = sid !== undefined ? ' AND session_id=?' : ''
   if (/^[A-Za-z]:[\\/]/.test(path)) {
-    return !!db.prepare("SELECT 1 FROM review_files WHERE lower(replace(identity,char(92),'/'))=? LIMIT 1")
-      .get(path.replace(/\\/g, '/').toLowerCase())
+    return !!db.prepare(`SELECT 1 FROM review_files WHERE lower(replace(identity,char(92),'/'))=?${scope} LIMIT 1`)
+      .get(path.replace(/\\/g, '/').toLowerCase(), ...(sid !== undefined ? [sid] : []))
   }
-  return !!db.prepare('SELECT 1 FROM review_files WHERE identity=? LIMIT 1').get(path)
+  return !!db.prepare(`SELECT 1 FROM review_files WHERE identity=?${scope} LIMIT 1`)
+    .get(path, ...(sid !== undefined ? [sid] : []))
 }
 
-/** @public @author ddj 2026年10月26号 @param cwd Workspace. @param id Immutable file identity. @returns Historical patch, not a reconstruction from disk. */
-export function reviewDetail(cwd: string, id: string): ReviewDetail | null {
+/** @public @author ddj 2026年10月26号 @param cwd Workspace. @param id Immutable file identity. @param sessionId Optional live session scope; other sessions' items resolve to null. @returns Historical patch, not a reconstruction from disk. */
+export function reviewDetail(cwd: string, id: string, sessionId?: string): ReviewDetail | null {
   const db = reviewDb(cwd)
   const row = db.prepare(`SELECT f.*,json_extract(s.payload,'$.capturedAt') AS captured_at FROM review_files f JOIN review_snapshots s
     USING(session_id,turn,seq) WHERE f.id=?`).get(id) as Row | undefined
   if (!row) return null
+  const sid = typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined
+  if (sid !== undefined && String(row.session_id) !== sid) return null
   const blocks = db.prepare('SELECT block_id AS id,decision FROM review_blocks WHERE file_id=? ORDER BY rowid').all(id) as unknown as ReviewBlockState[]
   const diff = JSON.parse(String(row.diff)) as OfficialDiff
   const evidence = db.prepare('SELECT 1 FROM review_evidence WHERE file_id=?').get(id)

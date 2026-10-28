@@ -22,12 +22,19 @@ describe('official review workspace boundary', () => {
     const handlers = reviewHandlers(ctx, registry)
     vi.mocked(reviewPage).mockReturnValue({ items: [], pending: 0, gaps: [], nextCursor: null })
     await handlers['edrv.review.list']!({ sessionId: 'view' })
-    expect(reviewPage).toHaveBeenLastCalledWith('/current', undefined, undefined, undefined)
+    // 规则：官方 review DB 按工作区保存，必须把当前会话 id 传给 reviewPage 做会话隔离。
+    expect(reviewPage).toHaveBeenLastCalledWith('/current', undefined, undefined, undefined, 'view')
     await handlers['edrv.review.list']!({ sessionId: 'view', path: '/current/file.lua', history: true, cursor: 50 })
-    expect(reviewPage).toHaveBeenLastCalledWith('/current', 50, true, '/current/file.lua')
+    expect(reviewPage).toHaveBeenLastCalledWith('/current', 50, true, '/current/file.lua', 'view')
     vi.mocked(reviewDetail).mockReturnValue(null)
     expect(await handlers['edrv.review.detail']!({ sessionId: 'view', id: 'other-workspace-id' })).toEqual({ ok: false, error: '官方审查记录不存在' })
-    expect(reviewDetail).toHaveBeenLastCalledWith('/current', 'other-workspace-id')
+    expect(reviewDetail).toHaveBeenLastCalledWith('/current', 'other-workspace-id', 'view')
+    // 跨会话 id：detail 返回 null → decide 拒绝且不写库。
+    expect(await handlers['edrv.review.decide']!({ sessionId: 'view', id: 'foreign', seq: 1, revision: 0, operationId: 'foreign-op', decision: 'accepted' }))
+      .toEqual({ ok: false, error: '官方审查记录不属于当前会话' })
+    expect(decideReview).not.toHaveBeenCalled()
+    // 本会话记录：decide 正常进入 DB/CAS 逻辑。
+    vi.mocked(reviewDetail).mockReturnValue({} as never)
     vi.mocked(decideReview).mockReturnValue({ revision: 1 })
     const request = { sessionId: 'view', id: 'immutable', seq: 1, revision: 0, operationId: 'operation', decision: 'accepted' as const }
     expect(await handlers['edrv.review.decide']!(request)).toEqual({ ok: true, revision: 1 })

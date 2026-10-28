@@ -19,16 +19,20 @@ export function reviewHandlers(ctx: Ctx, registry: Registry): Partial<RpcHandler
   return {
     'edrv.review.list': async (args) => {
       const cwd = await workspace(args.sessionId)
-      return { ok: true, page: reviewPage(cwd, args.cursor, args.history, args.path) }
+      // 会话隔离：review DB 按工作区保存，必须把当前会话 id 传下去，
+      // 否则同工作区多个对话的 pending 改动会在文件卡/审查页里汇总。
+      return { ok: true, page: reviewPage(cwd, args.cursor, args.history, args.path, String(args.sessionId)) }
     },
     'edrv.review.detail': async (args) => {
       const cwd = await workspace(args.sessionId)
-      const detail = reviewDetail(cwd, args.id)
+      const detail = reviewDetail(cwd, args.id, String(args.sessionId))
       return detail ? { ok: true, detail } : { ok: false, error: '官方审查记录不存在' }
     },
     'edrv.review.decide': async (args) => {
       const cwd = await workspace(args.sessionId)
       try {
+        // 归属校验：不允许通过其它会话的 id 做 Keep/Undo。
+        if (!reviewDetail(cwd, args.id, String(args.sessionId))) return { ok: false, error: '官方审查记录不属于当前会话' }
         const result = args.decision === 'rejected'
           ? await undoReview(ctx, sessionOf(ctx, args.sessionId), cwd, args)
           : decideReview(cwd, args)

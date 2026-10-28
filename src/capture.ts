@@ -238,6 +238,8 @@ async function buildRemoteRecord(cwd: string, exec: CaptureExec, args: Record<st
  * @param record 待入桶记录
  */
 async function persistRecord(ctx: Ctx, registry: Registry, session: Session, cwd: string, record: DiffRecord): Promise<void> {
+  // 记录桶按工作区共享：把采集会话写进记录，客户端/决策层才能按会话隔离。
+  if (session?.id !== undefined) record.sessionId = String(session.id)
   let bucket = registry.get(cwd)
   if (!bucket) { bucket = await loadBucket(ctx, cwd); registry.set(cwd, bucket) }
   const prior = new Map(bucket)

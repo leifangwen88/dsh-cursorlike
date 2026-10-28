@@ -89,9 +89,32 @@ function bucketOf(records: DiffRecord[]): Map<string, DiffRecord> {
 }
 
 describe('edrv.decideBatch', () => {
+  it('edrv.list 只返回当前会话的记录（旧记录无 sessionId 仍兼容）', async () => {
+    const fs = fakeFs({})
+    const registry = new Map([[CWD, bucketOf([
+      rec({ callId: 'own', sessionId: 's1' }),
+      rec({ callId: 'other', sessionId: 's2' }),
+      rec({ callId: 'legacy' }),
+    ])]])
+    const handlers = buildHandlers(fakeCtx(fs), registry)
+    const listed = await handlers['edrv.list']({ sessionId: 's1', skipStale: true })
+    expect(listed.ok && listed.records.map((item) => item.callId).sort()).toEqual(['legacy', 'own'])
+  })
+
+  it('不能通过 callId 操作其他会话捕获的记录', async () => {
+    const fs = fakeFs({})
+    const registry = new Map([[CWD, bucketOf([rec({ callId: 'other', sessionId: 's2' })])]])
+    const handlers = buildHandlers(fakeCtx(fs), registry)
+    const accepted = await handlers['edrv.accept']({ sessionId: 's1', callId: 'other' })
+    expect(accepted).toMatchObject({ ok: false, error: expect.stringContaining('其他会话') })
+    const batch = await handlers['edrv.decideBatch']({ sessionId: 's1', items: [{ callId: 'other', decision: 'rejected' }] })
+    expect(batch).toMatchObject({ ok: true, results: [{ ok: false }] })
+    expect(fs.writeText).not.toHaveBeenCalled()
+  })
+
   it('official identity blocks old accept, reject, batch and rollback without file IO', async () => {
     const path = CWD + '/a.ts'
-    saveSnapshot(CWD, { sourceKind: 'official', sessionId: 'source', turn: 1, seq: 10, capturedAt: '',
+    saveSnapshot(CWD, { sourceKind: 'official', sessionId: 's1', turn: 1, seq: 10, capturedAt: '',
       summary: { cwd: CWD, turn: 1, total: 1, added: 1, deleted: 1, files: [{ path, display: path, added: 1, deleted: 1 }] },
       files: [{ identity: path, diff: { kind: 'text', path, display: path, before: true, after: true, coarse: false, hunks: [] } }] })
     const fs = fakeFs({ [path]: 'b' })

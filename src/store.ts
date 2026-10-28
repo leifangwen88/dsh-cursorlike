@@ -251,8 +251,11 @@ export async function autoArchiveStale(ctx: Ctx, session: Session, cwd: string, 
   if (!fs) return 0
   const cache = new Map<string, ReadState>()
   const stale: DiffRecord[] = []
+  const sid = session?.id !== undefined ? String(session.id) : ''
   for (const rec of bucket.values()) {
     if (rec.archived || rec.superseded === true) continue
+    // 会话隔离：其他会话捕获的记录不得被本会话的列表轮询自动归档。
+    if (sid && rec.sessionId && rec.sessionId !== sid) continue
     if (await recordIsStale(ctx, session, cache, rec)) stale.push(rec)
   }
   if (!stale.length) return 0
@@ -286,7 +289,9 @@ export async function autoArchiveStale(ctx: Ctx, session: Session, cwd: string, 
 export async function archiveCanceled(
   ctx: Ctx, session: Session, cwd: string, bucket: Map<string, DiffRecord>, record?: DiffRecord,
 ): Promise<number> {
-  const records = [...bucket.values()]
+  const sid = session?.id !== undefined ? String(session.id) : ''
+  // 会话隔离：抵消对只在同一会话的记录之间匹配，避免把其他会话的编辑归档。
+  const records = [...bucket.values()].filter((rec) => !sid || !rec.sessionId || rec.sessionId === sid)
   const prior = record ? findInversePrior(records, record) : null
   const pairs = record ? (prior ? [[prior, record]] : []) : findCanceledPairs(records)
   const canceled = pairs.flat()

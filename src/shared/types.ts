@@ -38,6 +38,12 @@ export interface Decisions {
 /** 审查记录（host 内部存储与传给 client 的视图共用核心字段）。 */
 export interface RecordBase {
   callId: string
+  /**
+   * 采集该记录的会话 id。
+   * 工作区记录桶按 cwd 共享，必须靠该字段把「同工作区多会话」的待审改动隔离开；
+   * 升级前采集的旧记录可能没有该字段，按「未归属」兼容处理。
+   */
+  sessionId?: string
   toolName: 'edit' | 'write' | 'remote_ssh_write'
   path: string
   create: boolean

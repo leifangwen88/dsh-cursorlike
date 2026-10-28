@@ -273,7 +273,12 @@ async function applyDecisions(
       results.push({ callId: item.callId, ok: false, error: '记录不存在' })
       continue
     }
-    if (hasOfficial(cwd, record.path)) {
+    // 会话隔离：工作区桶共享，禁止通过 callId 操作其他会话捕获的记录。
+    if (record.sessionId && record.sessionId !== String(session?.id)) {
+      results.push({ callId: item.callId, ok: false, error: '记录属于其他会话，不能在这里决策' })
+      continue
+    }
+    if (hasOfficial(cwd, record.path, String(session?.id))) {
       results.push({ callId: item.callId, ok: false, error: '该文件已有官方审查记录；旧工具记录禁止决策或回滚，请使用官方审查入口' })
       continue
     }
@@ -604,7 +609,11 @@ export function buildHandlers(
       }
       const out: RecordView[] = []
       const ws = findRemoteWs(sc.cwd)
+      const sessionKey = String(args.sessionId)
       for (const rec of bucket.values()) {
+        // 会话隔离：同工作区的记录桶共享，只把本会话的记录交给本会话的编辑器/文件卡。
+        // 升级前采集的旧记录没有 sessionId，保留原行为（未归属，仍参与当前会话）。
+        if (rec.sessionId && rec.sessionId !== sessionKey) continue
         // 面板全量查询过滤已归档；聊天条按 callId 查询保留（状态徽章仍需正确显示）
         if (!want && rec.archived) continue
         if (want && !want.has(rec.callId)) continue
@@ -921,7 +930,7 @@ export function buildHandlers(
       if (!fs) return { ok: false, error: '缺少 fs' }
       const batch = args.batch
       const bucket = await bucketOf(registry, ctx, sc.cwd)
-      if (hasOfficial(sc.cwd, args.path)) return { ok: false, error: '该文件已有官方审查记录，禁止使用旧版批次回滚覆盖当前文件' }
+      if (hasOfficial(sc.cwd, args.path, String(sc.session.id))) return { ok: false, error: '该文件已有官方审查记录，禁止使用旧版批次回滚覆盖当前文件' }
       try {
         let affected: DiffRecord[] = []
         let beforeRec: DiffRecord | null = null
