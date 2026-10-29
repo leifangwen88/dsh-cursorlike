@@ -94,7 +94,7 @@ describe('official immutable ledger and decisions', () => {
   })
   it('navigation aggregates every pending record across pages and scopes a file detail list', () => {
     const page = reviewPage(cwd)
-    expect(page.overview?.files).toEqual([{ sourceKind: 'official', path: cwd + '/a.lua', label: 'a.lua', pending: 207 }])
+    expect(page.overview?.files).toMatchObject([{ sourceKind: 'official', path: cwd + '/a.lua', label: 'a.lua', pending: 207 }])
     expect(page.overview?.coveredPaths).toContain(cwd + '/a.lua')
     expect(reviewPage(cwd, 0, false, cwd + '/missing.lua').items).toEqual([])
     expect(reviewPage(cwd, 0, false, cwd + '/a.lua').items).toHaveLength(50)

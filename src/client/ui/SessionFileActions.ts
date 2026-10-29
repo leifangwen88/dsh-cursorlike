@@ -109,6 +109,34 @@ async function decideOfficialItem(sessionId: string, item: ReviewItem, reject: b
 }
 
 /**
+ * 官方一组待审项的整文件决策（卡片与编辑器累计视图共用）。
+ * 任务顺序固定：Keep 按轮次正序；Undo 按轮次逆序（后发生的修改先回滚）。
+ * 某一项失败不会回滚已成功项，结果如实计数。
+ * @author ddj 2026年10月29号
+ * @param sessionId 会话 id
+ * @param items 待审项
+ * @param reject true=Undo
+ * @returns 子结果
+ */
+export async function decideOfficialItems(sessionId: string, items: ReviewItem[], reject: boolean): Promise<FileActionOutcome> {
+  const outcome = emptyOutcome()
+  const ordered = [...items].sort((left, right) => (
+    left.turn - right.turn || left.seq - right.seq || left.id.localeCompare(right.id)
+  ))
+  if (reject) ordered.reverse()
+  for (const item of ordered) {
+    try {
+      await decideOfficialItem(sessionId, item, reject)
+      outcome.completed += 1
+    } catch (error) {
+      outcome.failed += 1
+      outcome.errors.push((item.display || item.currentPath) + '：' + errorText(error))
+    }
+  }
+  return outcome
+}
+
+/**
  * 官方单文件决策（逐项执行；某项失败后继续处理该文件其余项并如实计数）。
  * @author ddj 2026年10月27号
  * @param sessionId 会话 id
@@ -118,18 +146,8 @@ async function decideOfficialItem(sessionId: string, item: ReviewItem, reject: b
  * @throws 列表读取失败（未做任何决策）
  */
 async function decideOfficialRow(sessionId: string, row: SessionFileRow, reject: boolean): Promise<FileActionOutcome> {
-  const outcome = emptyOutcome()
   const items = await officialPendingItems(sessionId, row)
-  for (const item of items) {
-    try {
-      await decideOfficialItem(sessionId, item, reject)
-      outcome.completed += 1
-    } catch (error) {
-      outcome.failed += 1
-      outcome.errors.push((item.display || item.currentPath || row.display) + '：' + errorText(error))
-    }
-  }
-  return outcome
+  return decideOfficialItems(sessionId, items, reject)
 }
 
 /**

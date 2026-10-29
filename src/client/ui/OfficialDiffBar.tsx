@@ -1,9 +1,9 @@
 import React from 'react'
 import { Button, Menu } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ReviewDetail, ReviewItem, ReviewPage } from '../../shared/review.js'
+import type { CumulativeReview, ReviewDetail, ReviewItem, ReviewPage } from '../../shared/review.js'
 
 export interface OfficialBarProps {
-  official: { sessionId: string; path: string; pending: number; detail?: ReviewDetail; records?: ReviewItem[]; page: ReviewPage; onSelect: (id: string) => void }
+  official: { sessionId: string; path: string; pending: number; detail?: ReviewDetail; cumulative?: CumulativeReview | null; records?: ReviewItem[]; page: ReviewPage; onSelect: (id: string) => void }
   activePath: string
   pendingRegions?: unknown[]
   staleRegions?: unknown[]
@@ -56,6 +56,8 @@ export function OfficialDiffBar(props: OfficialBarProps): React.ReactElement {
   const [menu, setMenu] = React.useState<'records' | null>(null)
   const name = String(props.activePath || '').split(/[\\/]/).pop() || '当前文件'
   const detail = official.detail
+  const cumulative = official.cumulative
+  const cumulativeItems = cumulative?.items?.length ?? 0
   const records = official.records ?? []
   const count = pendingRegions.length
   const position = count ? `${Math.min(diffIdx + 1, count)} / ${count}` : '—'
@@ -69,9 +71,15 @@ export function OfficialDiffBar(props: OfficialBarProps): React.ReactElement {
     return <Button size="sm" variant="ghost" className="edrv-review-icon" aria-label={label} title={label} disabled={disabled} onClick={action}>{barIcon(mark)}</Button>
   }
 
-  const recordTrigger = <Button size="sm" variant="ghost" className="edrv-review-record" aria-label="选择官方差异记录" aria-haspopup="menu" aria-expanded={menu === 'records'} disabled={!records.length} onClick={() => setMenu(menu === 'records' ? null : 'records')}>
-    {detail ? `轮次 ${detail.item.turn}` : '选择记录'}{barIcon('down')}
-  </Button>
+  const recordTrigger = cumulative
+    ? <span className="edrv-review-record edrv-review-cumulative" title={`已合并 ${cumulativeItems} 轮待审修改`}>累计 {cumulativeItems} 轮</span>
+    : <Button size="sm" variant="ghost" className="edrv-review-record" aria-label="选择官方差异记录" aria-haspopup="menu" aria-expanded={menu === 'records'} disabled={!records.length} onClick={() => setMenu(menu === 'records' ? null : 'records')}>
+      {detail ? `轮次 ${detail.item.turn}` : '选择记录'}{barIcon('down')}
+    </Button>
+  const undoDisabled = props.reviewBatchBusy || (cumulative ? cumulativeItems === 0 : !detail?.capability.undo)
+  const keepDisabled = props.reviewBatchBusy || (cumulative ? cumulativeItems === 0 : !detail?.capability.keep)
+  const undoTitle = cumulative ? '回滚该文件在当前对话中的全部待审修改（按轮次逆序）' : detail?.capability.reason
+  const keepTitle = cumulative ? '保留该文件在当前对话中的全部未处理修改' : '保留当前记录的未处理修改'
 
   return <div className="edrv-diffbar edrv-diffbar-dock edrv-reviewbar" data-edrv-diffbox="1" data-edrv-diff-source="official" role="region" aria-label="文件差异审查">
     <ReviewAllRow {...props} />
@@ -79,8 +87,11 @@ export function OfficialDiffBar(props: OfficialBarProps): React.ReactElement {
     <div className="edrv-review-heading">
       <span className="edrv-review-filemark">{barIcon('file')}</span>
       <span className="edrv-review-filename" title={props.activePath}>{name}</span>
-      <span className="edrv-review-pending" title={`${official.pending} 条官方待审记录`}>待审 <strong>{official.pending}</strong></span>
-      <Menu open={menu === 'records'} anchor={recordTrigger} items={records.map((item) => ({ id: item.id, label: `轮次 ${item.turn} / 事件 ${item.seq}` }))} selectedId={detail?.item.id} onSelect={selectRecord} onClose={closeMenu} side="top" align="end" portal compact autoFocus />
+      <span className="edrv-review-pending" title={cumulative ? `${cumulativeItems} 轮官方待审修改` : `${official.pending} 条官方待审记录`}>待审 <strong>{official.pending}</strong></span>
+      {cumulative ? recordTrigger : <>
+        {recordTrigger}
+        <Menu open={menu === 'records'} anchor={recordTrigger} items={records.map((item) => ({ id: item.id, label: `轮次 ${item.turn} / 事件 ${item.seq}` }))} selectedId={detail?.item.id} onSelect={selectRecord} onClose={closeMenu} side="top" align="end" portal compact autoFocus />
+      </>}
     </div>
     <div className="edrv-review-tools">
       <div className="edrv-review-nav" role="group" aria-label="文件导航">
@@ -93,11 +104,11 @@ export function OfficialDiffBar(props: OfficialBarProps): React.ReactElement {
         {navButton('down', '下一个差异', props.onNextDiff, !count)}
       </div>
       <div className="edrv-review-actions">
-        <Button size="sm" variant="ghost" className="edrv-review-undo" icon={barIcon('undo')} onClick={props.onUndoFile} disabled={props.reviewBatchBusy || !detail?.capability.undo} title={detail?.capability.reason}>Undo</Button>
-        <Button size="sm" variant="primary" className="edrv-review-keep" icon={barIcon('check')} onClick={props.onAcceptFile} disabled={props.reviewBatchBusy || !detail?.capability.keep} title="保留当前记录的未处理修改">Keep</Button>
+        <Button size="sm" variant="ghost" className="edrv-review-undo" icon={barIcon('undo')} onClick={props.onUndoFile} disabled={undoDisabled} title={undoTitle}>Undo</Button>
+        <Button size="sm" variant="primary" className="edrv-review-keep" icon={barIcon('check')} onClick={props.onAcceptFile} disabled={keepDisabled} title={keepTitle}>Keep</Button>
       </div>
     </div>
-    {detail && staleRegions.length > 0 ? <div className="edrv-review-notice" role="status">{staleRegions.length} 处历史差异无法定位</div> : null}
+    {(detail || cumulative) && staleRegions.length > 0 ? <div className="edrv-review-notice" role="status">{staleRegions.length} 处差异无法定位（文件已被后续修改）</div> : null}
     {props.reviewError ? <div className="edrv-review-notice edrv-review-error" role="alert">{props.reviewError}</div> : null}
   </div>
 }

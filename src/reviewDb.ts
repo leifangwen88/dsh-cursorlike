@@ -6,7 +6,10 @@ import { reviewBlocks } from './shared/reviewRegions.js'
 import type { ReviewBlockState } from './shared/reviewRegions.js'
 import type { DatabaseSync } from 'node:sqlite'
 import { activeReady, dbFor } from './archiveDb.js'
-import type { CaptureGap, DecideReview, OfficialDiff, ReviewDetail, ReviewItem, ReviewPage, ReviewSnapshot } from './shared/review.js'
+import { evidenceText } from './reviewEvidence.js'
+import type { ReviewEvidence } from './reviewEvidence.js'
+import { diffTextHunks } from './shared/lineDiff.js'
+import type { CaptureGap, CumulativeReview, DecideReview, OfficialDiff, ReviewDetail, ReviewItem, ReviewPage, ReviewSnapshot } from './shared/review.js'
 
 type Row = Record<string, string | number | null>
 
@@ -224,12 +227,14 @@ export function reviewPage(cwd: string, cursor = 0, history = false, path?: stri
     ${sid !== undefined ? 'AND session_id=?' : ''}
     AND json_extract(payload,'$.summary.total')>json_array_length(payload,'$.summary.files') LIMIT 50`).all(...(sid !== undefined ? [sid] : [])) as Row[]
   // Navigation is metadata-only and independent of the 50-row patch-history page.
-  const files = db.prepare(`SELECT identity,MIN(json_extract(summary,'$.display')) AS label,COUNT(*) AS n
+  const files = db.prepare(`SELECT identity,MIN(json_extract(summary,'$.display')) AS label,COUNT(*) AS n,
+    SUM(json_extract(summary,'$.added')) AS added,SUM(json_extract(summary,'$.deleted')) AS deleted
     FROM review_files WHERE current=1 AND decision='pending'
     ${sid !== undefined ? 'AND session_id=?' : ''} GROUP BY identity ORDER BY identity`).all(...(sid !== undefined ? [sid] : [])) as Row[]
   const covered = db.prepare(`SELECT DISTINCT identity FROM review_files
     ${sid !== undefined ? 'WHERE session_id=?' : ''}`).all(...(sid !== undefined ? [sid] : [])) as Row[]
-  return { overview: { files: files.map((row) => ({ sourceKind: 'official', path: String(row.identity), label: String(row.label), pending: Number(row.n) })),
+  return { overview: { files: files.map((row) => ({ sourceKind: 'official', path: String(row.identity), label: String(row.label),
+    pending: Number(row.n), added: Number(row.added ?? 0), deleted: Number(row.deleted ?? 0) })),
     coveredPaths: covered.map((row) => String(row.identity)) },
     items: rows.slice(0, 50).map(itemOf), pending: Number(count.n), nextCursor: rows.length > 50 ? offset + 50 : null,
     gaps: [
@@ -271,6 +276,55 @@ export function reviewDetail(cwd: string, id: string, sessionId?: string): Revie
     capability: { keep: pending, undo,
       reason: undo ? 'Undo 将校验原始字节、当前文件版本及已处理差异块；文件变化会安全拒绝。'
         : '该记录缺少可验证的原始字节或受控写回能力；仍可显示差异和 Keep，不能猜测历史全文执行 Undo。' } }
+}
+
+/** @public @author ddj 2026年10月29号 @param cwd Workspace. @param sessionId Live session scope. @param identity File identity. @returns Cumulative pending diff from the earliest pending baseline to the latest pending result; null when there is no mergeable evidence or fewer than two pending records. */
+export function reviewCumulative(cwd: string, sessionId: string, identity: string): CumulativeReview | null {
+  const db = reviewDb(cwd)
+  const all = db.prepare(`SELECT f.*,json_extract(s.payload,'$.capturedAt') AS captured_at
+    FROM review_files f JOIN review_snapshots s USING(session_id,turn,seq)
+    WHERE f.session_id=? AND f.identity=? AND f.current=1
+    ORDER BY f.rowid`).all(sessionId, identity) as Row[]
+  // 只合并最后一段连续的 pending：中间夹着已决策记录时，累计 diff 会把已接受
+  // 的改动重新算进未处理差异里；此时回退单轮展示，避免误导。
+  const firstPending = all.findIndex((row) => row.decision === 'pending')
+  if (firstPending < 0) return null
+  let lastPending = all.length - 1
+  while (lastPending >= 0 && all[lastPending].decision !== 'pending') lastPending--
+  const rows = all.slice(firstPending, lastPending + 1)
+  if (rows.length < 2 || rows.some((row) => row.decision !== 'pending')) return null
+  const first = rows[0]
+  const last = rows[rows.length - 1]
+  const evidenceOf = (id: string): ReviewEvidence | null => {
+    const row = db.prepare('SELECT payload FROM review_evidence WHERE file_id=?').get(id) as Row | undefined
+    if (!row) return null
+    try { return JSON.parse(String(row.payload)) as ReviewEvidence } catch { return null }
+  }
+  const firstEvidence = evidenceOf(String(first.id))
+  const lastEvidence = evidenceOf(String(last.id))
+  if (!firstEvidence || !lastEvidence) return null
+  try {
+    const before = evidenceText(firstEvidence).before
+    const after = evidenceText(lastEvidence).after
+    const hunks = diffTextHunks(before, after)
+    if (!hunks) return null
+    const firstDiff = JSON.parse(String(first.diff)) as OfficialDiff
+    const lastDiff = JSON.parse(String(last.diff)) as OfficialDiff
+    if (firstDiff.kind !== 'text' || lastDiff.kind !== 'text') return null
+    if (firstDiff.before !== firstEvidence.before.present || lastDiff.after !== lastEvidence.after.present) return null
+    return {
+      path: identity,
+      display: String(lastDiff.display || lastDiff.path || identity),
+      diff: {
+        kind: 'text', path: lastDiff.path, display: lastDiff.display,
+        before: firstDiff.before, after: lastDiff.after, hunks, coarse: false,
+      },
+      items: rows.map(itemOf),
+    }
+  } catch {
+    // 二进制/超大/证据不完整的文件仍可单轮查看，不能把失败伪装成空差异。
+    return null
+  }
 }
 
 /** @public @author ddj 2026年10月27号 @param db Active decision transaction. @param request File or block action. Updates aggregate without losing mixed decisions. @throws Invalid or already-decided block. */

@@ -21,7 +21,7 @@ import type { DapAction, DapAdapterInfo, DapBreakpointAck, DapBreakpointInput, D
 import { DAP_ACTIONS } from './dap.js'
 import { appUrl } from './appUrl.js'
 import type { LoggerLevel } from './logger.js'
-import type { DecideReview, ReviewDetail, ReviewPage, ReviewRequest } from './review.js'
+import type { CumulativeReview, DecideReview, ReviewDetail, ReviewPage, ReviewRequest } from './review.js'
 
 /** webServer 精确路由。 */
 export const RPC_PATH = '/edrv/rpc'
@@ -367,6 +367,7 @@ export interface UiStatePatchInput {
 export interface RpcRequestMap {
   'edrv.review.list': ReviewRequest & { cursor?: number; history?: boolean; path?: string }
   'edrv.review.detail': ReviewRequest & { id: string }
+  'edrv.review.cumulative': ReviewRequest & { path: string }
   'edrv.review.decide': DecideReview
   'edrv.list': { sessionId?: string; callIds?: string[]; skipStale?: boolean }
   'edrv.accept': { sessionId?: string; callId: string; scope?: RpcScope; hunkIndex?: number }
@@ -480,6 +481,7 @@ export type RpcMethod = keyof RpcRequestMap
 export interface RpcOkMap {
   'edrv.review.list': { page: ReviewPage }
   'edrv.review.detail': { detail: ReviewDetail }
+  'edrv.review.cumulative': { cumulative: CumulativeReview | null }
   'edrv.review.decide': { revision: number }
   'edrv.list': { records: RecordView[] }
   'edrv.accept': { record: RecordView }

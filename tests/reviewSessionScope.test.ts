@@ -67,7 +67,7 @@ describe('官方 review DB 的会话隔离', () => {
     const a = reviewPage(cwd, 0, false, undefined, 'session-a')
     expect(a.pending).toBe(1)
     expect(a.items.map((item) => item.sessionId)).toEqual(['session-a'])
-    expect(a.overview?.files).toEqual([{ sourceKind: 'official', path: cwd + '/a.ts', label: 'a.ts', pending: 1 }])
+    expect(a.overview?.files).toMatchObject([{ sourceKind: 'official', path: cwd + '/a.ts', label: 'a.ts', pending: 1, added: 1, deleted: 0 }])
     expect(a.overview?.coveredPaths).toEqual([cwd + '/a.ts'])
 
     const b = reviewPage(cwd, 0, false, undefined, 'session-b')

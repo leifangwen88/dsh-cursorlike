@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { reviewHandlers } from '../src/reviewRpc.js'
 import type { Ctx } from '../src/store.js'
-import { reviewPage, reviewDetail, decideReview } from '../src/reviewDb.js'
+import { reviewCumulative, reviewPage, reviewDetail, decideReview } from '../src/reviewDb.js'
 import { undoReview } from '../src/reviewUndo.js'
 vi.mock('../src/reviewUndo.js', () => ({ undoReview: vi.fn() }))
-vi.mock('../src/reviewDb.js', () => ({ reviewPage: vi.fn(), reviewDetail: vi.fn(), decideReview: vi.fn() }))
+vi.mock('../src/reviewDb.js', () => ({ reviewPage: vi.fn(), reviewDetail: vi.fn(), reviewCumulative: vi.fn(), decideReview: vi.fn() }))
 
 describe('official review workspace boundary', () => {
   it('rejects unknown sessions before accessing any database', async () => {
@@ -26,6 +26,10 @@ describe('official review workspace boundary', () => {
     expect(reviewPage).toHaveBeenLastCalledWith('/current', undefined, undefined, undefined, 'view')
     await handlers['edrv.review.list']!({ sessionId: 'view', path: '/current/file.lua', history: true, cursor: 50 })
     expect(reviewPage).toHaveBeenLastCalledWith('/current', 50, true, '/current/file.lua', 'view')
+    vi.mocked(reviewCumulative).mockReturnValue(null)
+    expect(await handlers['edrv.review.cumulative']!({ sessionId: 'view', path: '/current/file.lua' }))
+      .toEqual({ ok: true, cumulative: null })
+    expect(reviewCumulative).toHaveBeenLastCalledWith('/current', 'view', '/current/file.lua')
     vi.mocked(reviewDetail).mockReturnValue(null)
     expect(await handlers['edrv.review.detail']!({ sessionId: 'view', id: 'other-workspace-id' })).toEqual({ ok: false, error: '官方审查记录不存在' })
     expect(reviewDetail).toHaveBeenLastCalledWith('/current', 'other-workspace-id', 'view')

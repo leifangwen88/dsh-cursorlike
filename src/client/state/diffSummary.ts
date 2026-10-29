@@ -4,7 +4,12 @@ import type { RecordView } from '../../shared/types.js'
 import type { FileSummary, Summary } from './records.js'
 import { summarize } from './records.js'
 
-export interface DiffFile extends FileSummary { sourceKind: 'official' | 'legacy' }
+export interface DiffFile extends FileSummary {
+  sourceKind: 'official' | 'legacy'
+  /** 官方概览的累计行数（不依赖分页 items）。 */
+  added?: number
+  deleted?: number
+}
 export interface DiffSummary extends Summary { files: DiffFile[]; pendingFiles: DiffFile[] }
 
 /** @public @author ddj 2026年10月26号 @param path Functional local or remote identity. @returns Comparison key without rewriting remote case. */

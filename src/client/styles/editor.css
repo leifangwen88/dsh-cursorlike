@@ -424,6 +424,7 @@
 [data-edrv-diff-dock-shell] .edrv-reviewbar button { height: 28px; min-height: 28px; padding: 0 8px; border-radius: 6px; font-family: inherit; font-size: 12px; font-weight: 500; white-space: nowrap; gap: 5px; }
 [data-edrv-diff-dock-shell] .edrv-reviewbar button.edrv-review-icon { width: 28px; min-width: 28px; padding: 0; }
 [data-edrv-diff-dock-shell] .edrv-reviewbar button.edrv-review-record { padding: 0 6px; font-size: 11px; color: var(--dsw-alias-label-secondary, #697586); }
+[data-edrv-diff-dock-shell] .edrv-review-cumulative { display: inline-flex; align-items: center; height: 28px; padding: 0 6px; font-size: 11px; color: var(--dsw-alias-label-secondary, #697586); white-space: nowrap; }
 [data-edrv-diff-dock-shell] .edrv-review-record svg { width: 12px; height: 12px; }
 [data-edrv-diff-dock-shell] .edrv-reviewbar button.edrv-review-keep { background: var(--dsw-alias-brand-primary, #3b63d9); color: var(--dsw-alias-label-primary-inverted, #fff); border: 1px solid transparent; }
 [data-edrv-diff-dock-shell] .edrv-reviewbar button.edrv-review-keep:hover:not(:disabled) { filter: brightness(.94); }

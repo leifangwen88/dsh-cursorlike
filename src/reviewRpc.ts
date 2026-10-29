@@ -1,6 +1,6 @@
 /** Session-scoped official review RPC. @author ddj 2026年10月26号 */
 import type { RpcHandlerMap } from './shared/rpc.js'
-import { decideReview, reviewDetail, reviewPage } from './reviewDb.js'
+import { decideReview, reviewCumulative, reviewDetail, reviewPage } from './reviewDb.js'
 import { undoReview } from './reviewUndo.js'
 import { bucketOf, cwdOfSession, sessionOf } from './registry.js'
 import type { Registry } from './registry.js'
@@ -27,6 +27,11 @@ export function reviewHandlers(ctx: Ctx, registry: Registry): Partial<RpcHandler
       const cwd = await workspace(args.sessionId)
       const detail = reviewDetail(cwd, args.id, String(args.sessionId))
       return detail ? { ok: true, detail } : { ok: false, error: '官方审查记录不存在' }
+    },
+    'edrv.review.cumulative': async (args) => {
+      const cwd = await workspace(args.sessionId)
+      // 同一文件多轮修改时，编辑器与文件卡都消费这一份累计差异。
+      return { ok: true, cumulative: reviewCumulative(cwd, String(args.sessionId), args.path) }
     },
     'edrv.review.decide': async (args) => {
       const cwd = await workspace(args.sessionId)

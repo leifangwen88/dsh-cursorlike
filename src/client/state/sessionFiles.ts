@@ -185,8 +185,9 @@ function rowOf(file: DiffFile, page: ReviewPage | null): SessionFileRow {
       path: file.path,
       display,
       name,
-      added,
-      deleted,
+      // 概览已按会话汇总全部待审轮次；分页 items 只用于 kind/diffable，不能用来算累计行数。
+      added: typeof file.added === 'number' ? file.added : added,
+      deleted: typeof file.deleted === 'number' ? file.deleted : deleted,
       pending: file.pending,
       sourceKind: 'official',
       // 无 items 元数据（分页截断）时乐观按文本差异处理：点击打开 diff 仍安全。

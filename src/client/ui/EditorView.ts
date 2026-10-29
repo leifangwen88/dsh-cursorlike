@@ -25,6 +25,7 @@ import { refreshFeed, subscribeErrors, subscribeRecords } from '../state/records
 import { subscribeReview, refreshReview } from '../state/reviewFeed.js'
 import { runReviewBatch } from '../reviewBatch.js'
 import { ReviewAllConfirm } from './ReviewAllConfirm.js'
+import { decideOfficialItems } from './SessionFileActions.js'
 import { reviewRegions } from '../../shared/reviewRegions.js'
 import { diffSummary, officialPath } from '../state/diffSummary.js'
 import { emitFileChanged, emitRefresh } from '../events.js'
@@ -544,18 +545,21 @@ export function EditorView(props) {
 
   const reviewOpsRef = React.useRef(new Map())
   const [officialDetail, setOfficialDetail] = React.useState(null)
+  const [officialCumulative, setOfficialCumulative] = React.useState(null)
   const [officialRecords, setOfficialRecords] = React.useState([])
   const [selectedReview, setSelectedReview] = React.useState(null)
   // Only switching file/session/selection invalidates the visible source immediately.
   // Background metadata refresh must not remove and recreate the current Monaco zones.
   React.useEffect(() => {
     setOfficialDetail(null)
+    setOfficialCumulative(null)
     setOfficialRecords([])
   }, [sessionId, active, selectedReview])
   React.useEffect(() => {
     const controller = new AbortController()
     if (!active || !review.page?.overview?.coveredPaths.some((path) => sameFile(path, active))) {
       setOfficialDetail(null)
+      setOfficialCumulative(null)
       setOfficialRecords([])
       return () => controller.abort()
     }
@@ -567,12 +571,26 @@ export function EditorView(props) {
         const page = await rpc('edrv.review.list', { sessionId, path: reviewPath }, controller.signal)
         if (controller.signal.aborted) return
         if (!page.ok) throw new Error(page.error)
+        setOfficialRecords((previous) => JSON.stringify(previous) === JSON.stringify(page.page.items) ? previous : page.page.items)
+        // 会话级累计差异：同一文件多轮修改合并成一份（Cursor 语义）。
+        // 旧 host 无此方法或证据不完整时静默回退到单轮 detail。
+        let cumulative = null
+        try {
+          const result = await rpc('edrv.review.cumulative', { sessionId, path: reviewPath }, controller.signal)
+          if (!controller.signal.aborted && result.ok) cumulative = result.cumulative
+        } catch { /* 旧 host：保持单轮兼容 */ }
+        if (controller.signal.aborted) return
+        if (cumulative) {
+          setOfficialCumulative((previous) => JSON.stringify(previous) === JSON.stringify(cumulative) ? previous : cumulative)
+          setOfficialDetail(null)
+          return
+        }
+        setOfficialCumulative(null)
         const selected = page.page.items.find((item) => item.id === selectedReview) ?? page.page.items[0]
         if (!selected) { setOfficialRecords([]); setOfficialDetail(null); return }
         const result = await rpc('edrv.review.detail', { sessionId, id: selected.id }, controller.signal)
         if (controller.signal.aborted) return
         if (!result.ok) throw new Error(result.error)
-        setOfficialRecords((previous) => JSON.stringify(previous) === JSON.stringify(page.page.items) ? previous : page.page.items)
         setOfficialDetail((previous) => JSON.stringify(previous) === JSON.stringify(result.detail) ? previous : result.detail)
       } catch (cause) { if (!controller.signal.aborted) setError('官方差异读取失败：' + String(cause)) }
     }
@@ -610,16 +628,18 @@ export function EditorView(props) {
     const trace = isDebug() && contentReady && currentRecords.length > 0
     const start = trace ? performance.now() : 0
     // #endregion
-    const next = officialDetail
-      ? reviewRegions(officialDetail.diff, officialDetail.item.id, officialDetail.blocks ?? [], contentReady ? content : null)
-      : diffRegions(currentRecords, contentReady ? content : null).filter((r) => !r.superseded)
+    const next = officialCumulative
+      ? reviewRegions(officialCumulative.diff, 'cumulative:' + officialCumulative.path, [], contentReady ? content : null)
+      : officialDetail
+        ? reviewRegions(officialDetail.diff, officialDetail.item.id, officialDetail.blocks ?? [], contentReady ? content : null)
+        : diffRegions(currentRecords, contentReady ? content : null).filter((r) => !r.superseded)
     // #region debug log
     if (trace) {
       try { dbg(sessionId, `[DEBUG diffRegions] records=${currentRecords.length} bytes=${content.length} regions=${next.length} ms=${(performance.now() - start).toFixed(1)}`) } catch (e) { /* 诊断不可影响渲染 */ }
     }
     // #endregion
     return next
-  }, [currentRecords, content, contentPath, active, officialDetail])
+  }, [currentRecords, content, contentPath, active, officialCumulative, officialDetail])
   // useMemo 稳定引用：否则 hover 等重渲染会让 view zone effect 反复重建（- 号闪烁）
   const pendingRegions = React.useMemo(() => regions.filter((r) => r.status === ST.PENDING && !r.stale), [regions])
   const staleRegions = React.useMemo(() => regions.filter((r) => r.status === ST.PENDING && r.stale), [regions])
@@ -2987,7 +3007,14 @@ export function EditorView(props) {
    * @returns Promise<boolean> 是否成功
    */
   const actHunk = (region, reject, silent) => {
-    if (region.sourceKind === 'official') return decideOfficial(reject, region.id)
+    if (region.sourceKind === 'official') {
+      // 累计视图的 block 不对应单条官方记录；决策必须走整文件 Keep/Undo。
+      if (officialCumulative) {
+        if (!silent) setError('累计视图请使用顶部 Keep / Undo（整文件）')
+        return Promise.resolve(false)
+      }
+      return decideOfficial(reject, region.id)
+    }
     const method = reject ? 'edrv.reject' : 'edrv.accept'
     // #region debug log
     const trace = isDebug()
@@ -3118,7 +3145,40 @@ export function EditorView(props) {
     finally { batchBusyRef.current = false }
   }
 
+  /**
+   * 累计视图的整文件 Keep/Undo：对参与累计的全部轮次逐条决策。
+   * Undo 由 decideOfficialItems 按轮次逆序执行，最终回到最早未处理基线。
+   * @author ddj 2026年10月29号
+   * @param reject true=Undo
+   * @returns 是否全部成功
+   */
+  async function decideCumulative(reject) {
+    if (!officialCumulative?.items?.length || batchBusyRef.current) return false
+    if (reject && (dirtyRef.current[active] || savingRef.current.has(active) || saveTimerRef.current.isPending())) {
+      setError('存在未保存或正在保存的修改，请等待完成后重试'); return false
+    }
+    batchBusyRef.current = true
+    const undoPath = active
+    const undoModel = editorRef.current?.getModel?.()
+    const undoVersion = undoModel?.getVersionId?.()
+    try {
+      const outcome = await decideOfficialItems(sessionId, officialCumulative.items, reject)
+      refreshReview(sessionId)
+      if (reject && activeRef.current === undoPath && !dirtyRef.current[undoPath]
+        && !savingRef.current.has(undoPath) && undoModel?.getVersionId?.() === undoVersion) reloadFile(true)
+      else if (reject && outcome.completed) setError('Undo 已完成，编辑器在等待期间变化；未覆盖当前缓冲区，请核对磁盘后刷新')
+      if (outcome.errors.length) setError(outcome.errors.slice(0, 3).join('；') + (outcome.errors.length > 3 ? ' …' : ''))
+      const total = outcome.completed + outcome.failed
+      setStatus((reject ? '已 Undo ' : '已 Keep ') + outcome.completed + ' / ' + total + ' 轮差异')
+      emitRefresh({ scope, paths: active ? [active] : undefined, kind: 'structure' })
+      return outcome.failed === 0
+    } catch (cause) {
+      setError(String(cause)); return false
+    } finally { batchBusyRef.current = false }
+  }
+
   const acceptFile = () => {
+    if (officialCumulative) return decideCumulative(false)
     if (officialDetail) return decideOfficial(false)
     if (batchBusyRef.current || !decideRegions.length) return
     batchBusyRef.current = true
@@ -3131,6 +3191,7 @@ export function EditorView(props) {
     }).catch(() => { batchBusyRef.current = false })
   }
   const undoFile = () => {
+    if (officialCumulative) return decideCumulative(true)
     if (officialDetail) return decideOfficial(true)
     if (batchBusyRef.current || !decideRegions.length) return
     batchBusyRef.current = true
@@ -4141,10 +4202,13 @@ export function EditorView(props) {
           }, 420)
         },
       },
-        React.createElement('button', { className: 'edrv-pill edrv-pill-keep', onClick: () => { dismissHover(); actHunk(hoverAct.region, false) } }, '✓ Keep'),
+        React.createElement('button', { className: 'edrv-pill edrv-pill-keep',
+          disabled: hoverAct.region.sourceKind === 'official' && !!officialCumulative,
+          title: hoverAct.region.sourceKind === 'official' && officialCumulative ? '累计视图请使用顶部 Keep / Undo（整文件）' : undefined,
+          onClick: () => { dismissHover(); actHunk(hoverAct.region, false) } }, '✓ Keep'),
         React.createElement('button', { className: 'edrv-pill edrv-pill-undo',
-          disabled: hoverAct.region.sourceKind === 'official' && !officialDetail?.capability.undo,
-          title: hoverAct.region.sourceKind === 'official' ? officialDetail?.capability.reason : undefined,
+          disabled: hoverAct.region.sourceKind === 'official' && (!!officialCumulative || !officialDetail?.capability.undo),
+          title: hoverAct.region.sourceKind === 'official' ? (officialCumulative ? '累计视图请使用顶部 Keep / Undo（整文件）' : officialDetail?.capability.reason) : undefined,
           onClick: () => { dismissHover(); actHunk(hoverAct.region, true) } }, '↩ Undo'))
     : null
 
@@ -4158,7 +4222,7 @@ export function EditorView(props) {
     mode: editorDockMode(active),
     official: officialFile ? { sessionId, page: review.page, path: officialFile,
       pending: sum.files.find((file) => sameFile(file.path, active))?.pending ?? 0,
-      detail: officialDetail, records: officialRecords, onSelect: setSelectedReview } : null,
+      detail: officialDetail, cumulative: officialCumulative, records: officialRecords, onSelect: setSelectedReview } : null,
     reviewError: isSessionMissingError(review.error || error) ? undefined : (review.error || error),
     layout,
     pendingRegions,

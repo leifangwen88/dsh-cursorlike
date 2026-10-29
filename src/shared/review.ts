@@ -69,6 +69,10 @@ export interface ReviewFile {
   path: string
   label: string
   pending: number
+  /** 该文件所有待审轮次的累计新增行数（不依赖第一页 items）。 */
+  added?: number
+  /** 该文件所有待审轮次的累计删除行数（不依赖第一页 items）。 */
+  deleted?: number
 }
 export interface ReviewOverview {
   files: ReviewFile[]
@@ -81,6 +85,17 @@ export interface ReviewPage {
   pending: number
   nextCursor: number | null
   gaps: CaptureGap[]
+}
+/** 同一会话、同一文件的累计待审差异（最早未处理基线 → 最新未处理结果）。 */
+export interface CumulativeReview {
+  /** 后端文件身份（absolute/identity，与 review.list 的 path 一致）。 */
+  path: string
+  /** 展示路径（取最新轮次）。 */
+  display: string
+  /** 合并后的完整文本差异；没有可用证据时返回 null，客户端回退到单轮展示。 */
+  diff: OfficialDiff
+  /** 参与合并的待审记录，按时间正序（Undo 时客户端需要逆序执行）。 */
+  items: ReviewItem[]
 }
 export interface ReviewRequest { sessionId: string }
 export interface DecideReview extends ReviewRequest {
