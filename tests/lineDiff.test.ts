@@ -47,7 +47,7 @@ describe('cumulative line diff', () => {
   })
 
   it('falls back instead of blocking on pathological sizes', () => {
-    const huge = Array.from({ length: 20001 }, (_, index) => String(index)).join('\n')
+    const huge = Array.from({ length: 100001 }, (_, index) => String(index)).join('\n')
     expect(diffTextHunks(huge, huge + '\nchanged')).toBeNull()
   })
 

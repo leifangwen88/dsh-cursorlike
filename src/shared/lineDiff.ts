@@ -13,8 +13,8 @@ import type { ReviewHunk } from './review.js'
 type OpKind = 'equal' | 'delete' | 'insert'
 interface Op { kind: OpKind; line: string }
 
-/** 超过该行数不计算累计 diff（回退到单轮展示，避免阻塞 host）。 */
-const MAX_LINES = 20000
+/** 超过该行数不计算精确累计 diff（返回 coarse 文件级视图，避免阻塞 host）。 */
+const MAX_LINES = 100000
 /** Myers 的编辑距离上限：超出则回退，防止重写整个大文件时内存爆炸。 */
 const MAX_D = 1200
 

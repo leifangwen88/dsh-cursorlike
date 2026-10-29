@@ -92,7 +92,7 @@ export interface CumulativeReview {
   path: string
   /** 展示路径（取最新轮次）。 */
   display: string
-  /** 合并后的完整文本差异；没有可用证据时返回 null，客户端回退到单轮展示。 */
+  /** 合并后的差异；无法计算行级 hunk 时返回 `coarse:true`（仍保留文件级累计语义）。 */
   diff: OfficialDiff
   /** 参与合并的待审记录，按时间正序（Undo 时客户端需要逆序执行）。 */
   items: ReviewItem[]

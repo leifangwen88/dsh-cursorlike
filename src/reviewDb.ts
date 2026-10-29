@@ -278,7 +278,7 @@ export function reviewDetail(cwd: string, id: string, sessionId?: string): Revie
         : '该记录缺少可验证的原始字节或受控写回能力；仍可显示差异和 Keep，不能猜测历史全文执行 Undo。' } }
 }
 
-/** @public @author ddj 2026年10月29号 @param cwd Workspace. @param sessionId Live session scope. @param identity File identity. @returns Cumulative pending diff from the earliest pending baseline to the latest pending result; null when there is no mergeable evidence or fewer than two pending records. */
+/** @public @author ddj 2026年10月29号 @param cwd Workspace. @param sessionId Live session scope. @param identity File identity. @returns Cumulative pending diff; coarse file-level when line evidence is unavailable; null only when fewer than two contiguous pending records exist. */
 export function reviewCumulative(cwd: string, sessionId: string, identity: string): CumulativeReview | null {
   const db = reviewDb(cwd)
   const all = db.prepare(`SELECT f.*,json_extract(s.payload,'$.capturedAt') AS captured_at
@@ -295,6 +295,27 @@ export function reviewCumulative(cwd: string, sessionId: string, identity: strin
   if (rows.length < 2 || rows.some((row) => row.decision !== 'pending')) return null
   const first = rows[0]
   const last = rows[rows.length - 1]
+  let firstDiff: OfficialDiff
+  let lastDiff: OfficialDiff
+  try {
+    firstDiff = JSON.parse(String(first.diff)) as OfficialDiff
+    lastDiff = JSON.parse(String(last.diff)) as OfficialDiff
+  } catch { return null }
+  const items = rows.map(itemOf)
+  const display = String(lastDiff.display || lastDiff.path || identity)
+  // 二进制/超大文件没有行级差异；仍返回“累计文件”让 bar/动作对齐 Cursor，
+  // 只是不产生逐行红绿。
+  if (firstDiff.kind !== 'text' || lastDiff.kind !== 'text') {
+    const kind = firstDiff.kind === 'text' ? lastDiff.kind : firstDiff.kind
+    if (kind === 'text') return null
+    return { path: identity, display, items,
+      diff: { kind, path: lastDiff.path, display: lastDiff.display } }
+  }
+  const coarse = (): CumulativeReview => ({
+    path: identity, display, items,
+    diff: { kind: 'text', path: lastDiff.path, display: lastDiff.display,
+      before: firstDiff.before, after: lastDiff.after, hunks: [], coarse: true },
+  })
   const evidenceOf = (id: string): ReviewEvidence | null => {
     const row = db.prepare('SELECT payload FROM review_evidence WHERE file_id=?').get(id) as Row | undefined
     if (!row) return null
@@ -302,28 +323,26 @@ export function reviewCumulative(cwd: string, sessionId: string, identity: strin
   }
   const firstEvidence = evidenceOf(String(first.id))
   const lastEvidence = evidenceOf(String(last.id))
-  if (!firstEvidence || !lastEvidence) return null
+  // 原始字节缺失/无法解码/文件过大：不回退到“只显示最后一轮”，
+  // 而是保留累计文件语义（Keep/Undo 整文件），并明确标记为 coarse。
+  if (!firstEvidence || !lastEvidence) return coarse()
   try {
+    if (firstDiff.before !== firstEvidence.before.present || lastDiff.after !== lastEvidence.after.present) return coarse()
     const before = evidenceText(firstEvidence).before
     const after = evidenceText(lastEvidence).after
     const hunks = diffTextHunks(before, after)
-    if (!hunks) return null
-    const firstDiff = JSON.parse(String(first.diff)) as OfficialDiff
-    const lastDiff = JSON.parse(String(last.diff)) as OfficialDiff
-    if (firstDiff.kind !== 'text' || lastDiff.kind !== 'text') return null
-    if (firstDiff.before !== firstEvidence.before.present || lastDiff.after !== lastEvidence.after.present) return null
+    if (!hunks) return coarse()
     return {
       path: identity,
-      display: String(lastDiff.display || lastDiff.path || identity),
+      display,
       diff: {
         kind: 'text', path: lastDiff.path, display: lastDiff.display,
         before: firstDiff.before, after: lastDiff.after, hunks, coarse: false,
       },
-      items: rows.map(itemOf),
+      items,
     }
   } catch {
-    // 二进制/超大/证据不完整的文件仍可单轮查看，不能把失败伪装成空差异。
-    return null
+    return coarse()
   }
 }
 

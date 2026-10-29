@@ -109,6 +109,8 @@ export function OfficialDiffBar(props: OfficialBarProps): React.ReactElement {
       </div>
     </div>
     {(detail || cumulative) && staleRegions.length > 0 ? <div className="edrv-review-notice" role="status">{staleRegions.length} 处差异无法定位（文件已被后续修改）</div> : null}
+    {cumulative && (cumulative.diff.kind !== 'text' || cumulative.diff.coarse)
+      ? <div className="edrv-review-notice" role="status">该文件差异过大或缺少原始基线：仅提供文件级 Keep / Undo，不显示逐行标记</div> : null}
     {props.reviewError ? <div className="edrv-review-notice edrv-review-error" role="alert">{props.reviewError}</div> : null}
   </div>
 }

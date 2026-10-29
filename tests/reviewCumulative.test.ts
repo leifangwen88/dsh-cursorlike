@@ -31,6 +31,16 @@ function snapshot(sessionId: string, turn: number, seq: number, path: string,
   }
 }
 
+/** @private @author ddj 2026年10月29号 @param sessionId Session. @param turn Turn. @param seq Event. @param path Relative file. @returns Binary official fixture. */
+function binarySnapshot(sessionId: string, turn: number, seq: number, path: string): ReviewSnapshot {
+  return {
+    sourceKind: 'official', sessionId, turn, seq, capturedAt: '2026-10-29T00:00:00Z',
+    summary: { cwd, turn, total: 1, added: 0, deleted: 0,
+      files: [{ path, display: path, added: 0, deleted: 0, binary: true }] },
+    files: [{ identity: cwd + '/' + path, diff: { kind: 'binary', path, display: path } }],
+  }
+}
+
 /** @private @author ddj 2026年10月29号 @param sessionId Session. @param path Relative file. @param before Raw before. @param after Raw after. */
 function evidence(sessionId: string, path: string, before: string | null, after: string | null): void {
   const db = reviewDb(cwd)
@@ -99,11 +109,16 @@ describe('reviewCumulative', () => {
     expect(regions[0]).toMatchObject({ start: 1, end: 3, stale: false })
   })
 
-  it('returns null when evidence is missing or only one pending record exists', () => {
+  it('keeps cumulative file semantics when evidence is missing', () => {
     const path = 'no-evidence.ts'
     saveSnapshot(cwd, snapshot('s3', 1, 50, path, true, true, ['-A', '+B']))
     saveSnapshot(cwd, snapshot('s3', 2, 60, path, true, true, ['-B', '+C']))
-    expect(reviewCumulative(cwd, 's3', cwd + '/' + path)).toBeNull()
+    const cumulative = reviewCumulative(cwd, 's3', cwd + '/' + path)
+    expect(cumulative).not.toBeNull()
+    expect(cumulative!.items.map((item) => item.turn)).toEqual([1, 2])
+    // 没有原始字节时不回退单轮：仍给累计文件级视图，但没有逐行 hunk。
+    expect(cumulative!.diff).toMatchObject({ kind: 'text', coarse: true, hunks: [] })
+    expect(reviewRegions(cumulative!.diff, 'cumulative:' + path, [], 'C\n')).toEqual([])
 
     const single = 'single.ts'
     saveSnapshot(cwd, snapshot('s4', 1, 70, single, true, true, ['-A', '+B']))
@@ -120,6 +135,17 @@ describe('reviewCumulative', () => {
     evidence('s5', path, 'C\n', 'D\n')
     reviewDb(cwd).prepare("UPDATE review_files SET decision='accepted' WHERE session_id='s5' AND turn=2").run()
     expect(reviewCumulative(cwd, 's5', cwd + '/' + path)).toBeNull()
+  })
+
+  it('keeps cumulative file semantics for binary files (no line markers)', () => {
+    const path = 'image.png'
+    saveSnapshot(cwd, binarySnapshot('s7', 1, 140, path))
+    saveSnapshot(cwd, binarySnapshot('s7', 2, 150, path))
+    const cumulative = reviewCumulative(cwd, 's7', cwd + '/' + path)
+    expect(cumulative).not.toBeNull()
+    expect(cumulative!.diff).toMatchObject({ kind: 'binary', path, display: path })
+    expect(cumulative!.items).toHaveLength(2)
+    expect(reviewRegions(cumulative!.diff, 'cumulative:' + path, [], null)).toEqual([])
   })
 
   it('ignores accepted rounds after the last pending record', () => {
