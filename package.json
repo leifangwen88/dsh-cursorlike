@@ -1,7 +1,7 @@
 {
   "name": "dsh-cursorlike",
-  "version": "0.1.1",
-  "description": "CursorLike — Cursor-style coding surface for DeepSeek Harness (open source, MIT; fork of dsh-vscode-mode): pending-files card, side Monaco editor and file tree, diff review, Tab completion and Quick Edit.",
+  "version": "0.1.2",
+  "description": "CursorLike — Cursor-style coding surface for DeepSeek Harness (open source, MIT; fork of dsh-vscode-mode): cumulative per-file diff review, pending-files card, side Monaco editor and file tree, Tab completion and Quick Edit.",
   "icon": "assets/icon.svg",
   "keywords": [
     "dsh",

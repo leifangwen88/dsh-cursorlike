@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "CursorLike",
-    "description": "Cursor 式 DSH 编码工作台：输入框上方待审文件卡、右侧 Monaco 编辑器与文件树、差异审查（Keep/Undo/Review）、Tab 补全与 Quick Edit 内联编辑。开源 MIT。"
+    "description": "Cursor 式 DSH 编码工作台：输入框上方待审文件卡、右侧 Monaco 编辑器与文件树、按会话累计的差异审查（Keep/Undo/Review）、Tab 补全与 Quick Edit 内联编辑。开源 MIT。"
   }
 }

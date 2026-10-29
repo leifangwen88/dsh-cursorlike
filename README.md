@@ -5,21 +5,30 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > **给 DeepSeek Harness 的 Cursor 式编码工作台。**
-> 输入框上方待审文件卡 + 官方右侧栏 Monaco 编辑器 + 差异审查 + AI 补全/内联编辑。
+> 输入框上方待审文件卡 + 官方右侧栏 Monaco 编辑器 + 同一文件多轮修改的累计差异审查 + AI 补全/内联编辑。
 
 CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MIT）的社区 fork：
 保留上游的编辑器、文件树、差异审查与 AI 基础，围绕 Cursor 的核心动线重构了「会话级文件浏览卡」，
 并把不进入主路径的重功能逐步做减法。
 
-- 当前版本：`0.1.1`（已发布到 npm 与 GitHub Releases）
+- 当前版本：`0.1.2`（已发布到 npm 与 GitHub Releases）
 - 安装：`dsh plugin add dsh-cursorlike`
 - 目标 DSH：`0.2.1-rc.x`（`engines.dsh: >=0.1.0-rc.1 <0.3.0-0`，cordis `>=4.0.0-rc <5`）
 - 许可证：MIT（保留上游版权与许可声明）
 
+### 0.1.2 更新
+
+- 同一文件被多轮修改时，文件卡与编辑器改为 **Cursor 式累计 diff**：默认合并全部待审轮次，不再只显示当前轮；
+- Keep / Undo 按整文件全部待审轮次执行（Undo 按轮次逆序回滚）；
+- 对话中新建的文件按“整文件新增”累计；
+- 缺少完整基线、超大或二进制文件保留累计文件级审查；无逐行标记时明确提示，不再退回单轮视图；
+- 修复同工作区多会话待审记录被汇总的问题，官方审查查询增加会话级索引；
+- 插件详情页增加 GitHub / Releases / npm / Issues 入口。
+
 ## 截图
 
 <p align="center">
-  <img src="assets/screenshots/cursorlike-overview.png" alt="CursorLike：对话 + 右侧栏编辑器 / 文件树 / 待审文件卡与差异审查" width="1000">
+  <img src="https://raw.githubusercontent.com/leifangwen88/dsh-cursorlike/main/assets/screenshots/cursorlike-overview.png" alt="CursorLike：对话 + 右侧栏编辑器 / 文件树 / 待审文件卡与差异审查" width="1000">
 </p>
 
 <p align="center"><em>对话 + 官方右侧栏编辑器（文件树 / 页签 / Monaco）+ 待审文件卡与差异审查</em></p>
@@ -33,7 +42,8 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 - 默认收起；用户展开/收起状态按会话记忆
 - 点击文件行：有差异打开审查，无差异直接打开编辑器
 - 文件已不存在（删除/重命名/插件卸载残留）时显示孤儿状态：`×` 禁用、`✓` 可清除记录
-- 列表内部滚动，宽度跟随输入框；数据只表达**当前 pending 改动**，不承担历史回填
+- 列表内部滚动，宽度跟随输入框；行数 `+N −M` 为同一文件全部待审轮次的累计值，与编辑器中的累计 diff 同源
+- 数据只表达**当前 pending 改动**，不承担历史回填
 
 ### 2. 官方右侧栏编辑器
 
@@ -46,6 +56,9 @@ CursorLike 是 [dsh-vscode-mode](https://github.com/Lenonss/DSH_VsCodeMode)（MI
 ### 3. 差异审查
 
 - 聊天内联 diff 与 Review 页；Keep / Undo / 归档 / 回滚
+- **同一文件多轮修改按会话累计为一份 diff**：文件卡行数、编辑器红绿标记与 bar 的「累计 N 轮」同源
+- Keep / Undo 作用于该文件在当前对话中的全部待审轮次；新建文件按整文件新增展示
+- 文件缺少可信完整基线、超大或二进制时，保留累计文件级审查并提示“无逐行标记”，不会退回只显示最后一轮
 - 输入框文件卡与编辑器审查状态联动，处理后文件从 pending 卡消失
 
 ### 4. AI 编辑
@@ -134,6 +147,16 @@ dsh plugin --profile <profile-name> add <Release tarball URL>
 
 `dsh plugin` 只把参数转发给 pnpm，不会自动选中组合包；desktop profile 由 Electron 应用独占管理，请使用 A。
 
+### 升级
+
+DSH **不会自动更新社区插件**（只有按需安装的官方插件会在版本与 DSH 不同时出现 Update 按钮）。升级 CursorLike：
+
+1. 设置 → **插件** → 打开 **CursorLike** → **卸载**；
+2. 重新安装最新版：`dsh-cursorlike`（或 Release tarball URL）；
+3. 重启 DSH。
+
+已有待审记录与审查决策保存在插件自己的工作区数据库中，不会因为升级代码而自动清空。
+
 ## 快捷键
 
 默认键位（可在 DSH 官方快捷键设置中修改）：
@@ -182,7 +205,7 @@ pnpm pack
 
 ## 测试基线
 
-截至 2026-10-28：`201` 个测试文件通过 / `1` 个跳过（LSP e2e），`2539` 个用例通过、`14` 个跳过、`0` 失败。
+截至 2026-10-29：`204` 个测试文件通过 / `1` 个跳过（LSP e2e），`2561` 个用例通过、`14` 个跳过、`0` 失败。
 
 本机跑全量时可能遇到两类环境问题（与源码无关）：
 
@@ -191,9 +214,11 @@ pnpm pack
 
 ## 已知限制
 
-- DSH 重启后，历史轮次的 changed-files summary 由 Host 内存持有、会丢失；输入框文件卡只表达当前 pending 改动，不做历史回填；
+- DSH 官方 changed-files summary 主要由 Host 内存持有；插件会把自己采集的 diff / 证据持久化到 SQLite，正常重启后可恢复 pending 卡与编辑器；若在采集完成前重启，该轮可能留下缺口；
+- 旧记录、缺少完整基线、`coarse`、二进制或超大文件可能无法显示逐行红绿，只保留累计文件级审查与提示；
+- 精确累计行级 diff 上限为 100,000 行 / 1200 编辑距离，超出时降级为文件级（不阻塞 Host）；
 - LSP 真正接入的语言只有 Lua / C#；不自动下载语言服务器（「官方源下载器」方案暂缓）；
-- 无自更新 / 检查更新，更新交给 DSH 插件管理器；
+- DSH 不自动更新社区插件，升级需卸载后重装（见「升级」）；
 - Quick Edit 不占用 `Ctrl+K`（与 DSH 的会话搜索冲突），通过选区浮层触发；
 - 部分上游重功能仍在包内（DAP、代码片段、PDF 预览等），减法进行中；
 - 欢迎提交使用截图到仓库 `assets/screenshots/`。

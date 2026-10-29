@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "CursorLike",
-    "description": "Cursor-style coding surface for DeepSeek Harness: pending-files card above the composer, side Monaco editor and file tree, diff review (Keep/Undo/Review), Tab completion and Quick Edit. Open source (MIT)."
+    "description": "Cursor-style coding surface for DeepSeek Harness: pending-files card above the composer, side Monaco editor and file tree, cumulative per-session diff review (Keep/Undo/Review), Tab completion and Quick Edit. Open source (MIT)."
   }
 }
